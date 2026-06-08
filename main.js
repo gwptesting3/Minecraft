@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
-// 1. Basic Setup & Renderer Optimization
+// 1. Scene & Renderer Setup
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xa5d6a7); 
 
@@ -14,11 +14,13 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
 
+// CRITICAL FOR OPTION 2: Tell the renderer to respect clipping planes
+renderer.localClippingEnabled = true;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 document.body.appendChild(renderer.domElement);
 
-// 2. Realistic Lighting Setup
+// 2. Lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); 
 scene.add(ambientLight);
 
@@ -27,31 +29,36 @@ sunLight.position.set(5, 8, 5);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.width = 1024;
 sunLight.shadow.mapSize.height = 1024;
-sunLight.shadow.camera.near = 0.5;
-sunLight.shadow.camera.far = 25;
 sunLight.shadow.bias = -0.0005; 
 scene.add(sunLight);
 
-// 3. Add a Ground Plane for Shadows
+// 3. Ground Plane
 const floorGeo = new THREE.PlaneGeometry(20, 20);
-const floorMat = new THREE.MeshStandardMaterial({ 
-    color: 0x81c784, 
-    roughness: 0.8  
-});
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x81c784, roughness: 0.8 });
 const floor = new THREE.Mesh(floorGeo, floorMat);
 floor.rotation.x = -Math.PI / 2; 
 floor.position.y = 0;
 floor.receiveShadow = true; 
 scene.add(floor);
 
-// 4. Variables & Loading Dennis
-let dennis;
-let isWalking = true; 
+// 4. Group Containers for the Slices
+// Adjusting ELEVATION_OFFSET lifts Dennis's base mesh out of the grass floor completely!
+const ELEVATION_OFFSET = 0.5; 
+const isWalking = true;
 
-// We establish a safe baseline height. If Dennis still sinks slightly, 
-// change this 0.4 value to 0.5 or 0.6 until his paws sit perfectly on top!
-const BASELINE_Y = 0.4; 
+const frontHalfGroup = new THREE.Group();
+const backHalfGroup = new THREE.Group();
+frontHalfGroup.position.y = ELEVATION_OFFSET;
+backHalfGroup.position.y = ELEVATION_OFFSET;
+scene.add(frontHalfGroup);
+scene.add(backHalfGroup);
 
+// Define Slice Planes along the Z-axis (front-to-back slicing)
+const sliceZLocation = 0.1; // Adjust this if the slice cut isn't perfectly between his front and back legs
+const clipFront = new THREE.Plane(new THREE.Vector3(0, 0, -1), sliceZLocation);
+const clipBack = new THREE.Plane(new THREE.Vector3(0, 0, 1), -sliceZLocation);
+
+// 5. Loading Dennis & Creating Clones
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
@@ -59,12 +66,10 @@ const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
 loader.load('dennis.glb', (gltf) => {
-    dennis = gltf.scene;
-    
-    // Set his initial stable position
-    dennis.position.set(0, BASELINE_Y, 0);
+    const originalModel = gltf.scene;
 
-    dennis.traverse((child) => {
+    // Fix shadows and materials on the original hierarchy before cloning
+    originalModel.traverse((child) => {
         if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
@@ -75,33 +80,56 @@ loader.load('dennis.glb', (gltf) => {
         }
     });
 
-    scene.add(dennis);
+    // Clone 1: The Front Half (Head, Chest, Front Legs)
+    const frontClone = originalModel.clone();
+    frontClone.traverse((child) => {
+        if (child.isMesh && child.material) {
+            child.material = child.material.clone(); // Clone material so clipping only affects this half
+            child.material.clippingPlanes = [clipFront];
+        }
+    });
+    // Set the pivot center point for the front leg swing
+    frontClone.position.set(0, 0, 0); 
+    frontHalfGroup.add(frontClone);
+
+    // Clone 2: The Back Half (Hips, Back Legs, Tail)
+    const backClone = originalModel.clone();
+    backClone.traverse((child) => {
+        if (child.isMesh && child.material) {
+            child.material = child.material.clone();
+            child.material.clippingPlanes = [clipBack];
+        }
+    });
+    // Set the pivot center point for the back leg swing
+    backClone.position.set(0, 0, 0); 
+    backHalfGroup.add(backClone);
+
 }, undefined, (error) => {
     console.error('Error loading Dennis:', error);
 });
 
-// 5. The Animation Loop (Fixed Smooth Waddle)
+// 6. The Animation Loop (Option 2: True Limb Swing via Code Splitting)
 function animate() {
     requestAnimationFrame(animate);
 
-    // Reduced multiplier slightly (from 0.006 to 0.004) to eliminate high-speed vibrations
-    const time = performance.now() * 0.004; 
+    const time = performance.now() * 0.005; 
 
-    if (dennis) {
+    if (frontHalfGroup.children.length > 0 && backHalfGroup.children.length > 0) {
         if (isWalking) {
-            // 1. Smooth, wide side-to-side rock
-            dennis.rotation.z = Math.sin(time) * 0.12;
+            // Front segments rotate opposite to back segments to simulate alternating legs walking!
+            frontHalfGroup.rotation.x = Math.sin(time) * 0.25;
+            backHalfGroup.rotation.x = -Math.sin(time) * 0.25;
 
-            // 2. Gentle horizontal body twist
-            dennis.rotation.y = Math.cos(time * 0.5) * 0.1;
-
-            // FIX: We add the bounce ON TOP of the BASELINE_Y so he never clips down into the ground
-            dennis.position.y = BASELINE_Y + Math.abs(Math.sin(time * 2)) * 0.08;
+            // Smooth body bobbing up and down together safely above the ground
+            const bobbing = Math.abs(Math.sin(time * 2)) * 0.05;
+            frontHalfGroup.position.y = ELEVATION_OFFSET + bobbing;
+            backHalfGroup.position.y = ELEVATION_OFFSET + bobbing;
         } else {
-            // Idle: Ground him smoothly and apply a subtle breathing effect
-            dennis.rotation.z = 0;
-            dennis.rotation.y = 0;
-            dennis.position.y = BASELINE_Y + Math.sin(time * 0.3) * 0.01;
+            // Idle position
+            frontHalfGroup.rotation.x = 0;
+            backHalfGroup.rotation.x = 0;
+            frontHalfGroup.position.y = ELEVATION_OFFSET;
+            backHalfGroup.position.y = ELEVATION_OFFSET;
         }
     }
 
