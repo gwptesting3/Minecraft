@@ -492,7 +492,7 @@ export const ChunkManager = {
 };
 
 // ============================================================================
-// 7. ATHOSPHERIC PARTICLES & LEAF WIND FLUID SYSTEMS
+// 7. ATMOSPHERIC PARTICLES & LEAF WIND FLUID SYSTEMS
 // ============================================================================
 export const ParticleSystem = {
     instancedLeafMesh: null,
@@ -532,13 +532,15 @@ export const ParticleSystem = {
     },
 
     update(playerX, playerZ, timeTicks) {
+        // SAFETY GUARD: Do not execute particle tracking calculation if arrays aren't instantiated
+        if (!this.instancedLeafMesh) return;
+
         const calculationDummy = new THREE.Object3D();
         const windWaveForce = Math.sin(timeTicks * GLOBAL_CONFIG.WORLD.WIND_BASE_SPEED) * 0.03;
 
         for (let i = 0; i < GLOBAL_CONFIG.FOLIAGE.LEAF_PARTICLES; i++) {
             const data = this.particleTrackingData[i];
             
-            // Apply wind translation vectors
             data.position.x += data.velocity.x;
             data.position.y += data.velocity.y;
             data.position.z += data.velocity.z + windWaveForce;
@@ -546,7 +548,6 @@ export const ParticleSystem = {
             data.rotation.x += data.spinVelocity;
             data.rotation.y += data.spinVelocity * 0.4;
 
-            // Recycler boundaries: Reset stray leaves directly ahead of the player path
             const distanceToCenter = data.position.distanceTo(new THREE.Vector3(playerX, data.position.y, playerZ));
             const groundFloorHeight = NoiseEngine.getLayeredHeight(data.position.x, data.position.z);
 
@@ -576,7 +577,6 @@ export const CelestialSystem = {
     skyDomeMesh: null,
 
     init() {
-        // Sun Configuration
         this.sunLight.castShadow = true;
         this.sunLight.shadow.mapSize.width = 2048;
         this.sunLight.shadow.mapSize.height = 2048;
@@ -589,7 +589,6 @@ export const CelestialSystem = {
         this.sunLight.shadow.camera.bottom = -shadowBounds;
         scene.add(this.sunLight);
 
-        // Moon Configuration
         this.moonLight.castShadow = true;
         this.moonLight.shadow.mapSize.width = 1024;
         this.moonLight.shadow.mapSize.height = 1024;
@@ -599,7 +598,6 @@ export const CelestialSystem = {
         this.moonLight.shadow.camera.bottom = -shadowBounds;
         scene.add(this.moonLight);
 
-        // Skybox sphere creation
         const skyGeometry = new THREE.SphereGeometry(850, 24, 12);
         const skyMaterial = new THREE.MeshBasicMaterial({ color: 0x81d4fa, side: THREE.BackSide });
         this.skyDomeMesh = new THREE.Mesh(skyGeometry, skyMaterial);
@@ -607,7 +605,12 @@ export const CelestialSystem = {
     },
 
     update(currentTimeSeconds, px, pz) {
-        // Continuous rotation step angle across the 5-minute threshold duration
+        // CRUCIAL CRASH FIX: Guard check to ensure coordinates are valid numbers before copying spatial vectors
+        if (px === undefined || pz === undefined || null) {
+            px = 0;
+            pz = 0;
+        }
+
         const cycleProgressAngle = (currentTimeSeconds / GLOBAL_CONFIG.WORLD.DAY_NIGHT_DURATION) * Math.PI * 2;
 
         const sx = px + Math.sin(cycleProgressAngle) * 350;
@@ -620,16 +623,13 @@ export const CelestialSystem = {
         const mz = pz - Math.sin(cycleProgressAngle * 0.5) * 80;
         this.moonLight.position.set(mx, my, mz);
 
-        // Compute blending ratio factor: 0.0 = midnight, 1.0 = zenith noon
         const dayWeightFactor = Math.max(0, Math.min(1, sy / 120));
-
-        // Smoothly blend sky color parameters based on celestial altitude checks
         const deepNightSky = new THREE.Color(0x040814);
         const radiantDaySky = new THREE.Color(0x81d4fa);
         const targetSkyColor = deepNightSky.clone().lerp(radiantDaySky, dayWeightFactor);
 
-        this.skyDomeMesh.material.color.copy(targetSkyColor);
-        scene.background.copy(targetSkyColor);
+        if (this.skyDomeMesh) this.skyDomeMesh.material.color.copy(targetSkyColor);
+        scene.background = targetSkyColor;
         scene.fog = new THREE.FogExp2(targetSkyColor.getHex(), 0.008 + (1.0 - dayWeightFactor) * 0.007);
 
         this.sunLight.intensity = dayWeightFactor * 1.7;
@@ -637,9 +637,13 @@ export const CelestialSystem = {
     }
 };
 
-// Initialize dependent environment stacks
+// Initialize dependent environment systems
 CelestialSystem.init();
 ParticleSystem.init();
+
+// Setup temporary initial camera matrix location so the screen isn't frozen blank on launch
+camera.position.set(0, 15, -25);
+camera.lookAt(0, 0, 0);
 
 // ============================================================================
 // 9. ASYNCHRONOUS GLTF ASSET AND HERO INSTANTIATION PIPELINES
@@ -659,7 +663,6 @@ mainAssetLoader.load('dennis.glb', (gltfResource) => {
     characterGraphicsWrapperGroup.scale.set(0.65, 0.65, 0.65);
     characterGraphicsWrapperGroup.add(internalDennisMesh);
     
-    // Mount the modular camera wrapper onto the character body
     characterGraphicsWrapperGroup.add(cameraOffsetGroup);
     scene.add(characterGraphicsWrapperGroup);
 
@@ -667,12 +670,17 @@ mainAssetLoader.load('dennis.glb', (gltfResource) => {
         if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
+            // Enhanced visual textures fix: Apply repetition tiling parameters onto material textures
+            if (child.material.map) {
+                child.material.map.wrapS = THREE.RepeatWrapping;
+                child.material.map.wrapT = THREE.RepeatWrapping;
+                child.material.map.repeat.set(2, 2);
+            }
         }
     });
 
-    // CRUCIAL CRASH FIX: Align state position exactly to valid ground heights BEFORE loop calculation queries start
     const initialSurfaceY = NoiseEngine.getLayeredHeight(0, 0);
-    EngineState.player.position.set(0, initialSurfaceY + 4.0, 0);
+    EngineState.player.position.set(0, initialSurfaceY + 2.0, 0);
     characterGraphicsWrapperGroup.position.copy(EngineState.player.position);
 }, undefined, err => console.error("Critical GLTF Load Fault Stack: ", err));
 
@@ -685,7 +693,7 @@ function executionEngineFrameStep() {
     const timeInSeconds = performance.now() / 1000;
     EngineState.time = timeInSeconds;
 
-    // Fluid vertex rendering modifier for ocean wave sheets inside rendering buffers
+    // Fluid vertex wave modifier loop
     EngineState.loadedChunks.forEach(chunkGroup => {
         const waterMeshInstance = chunkGroup.getObjectByName("chunkWater");
         if (waterMeshInstance) {
@@ -703,10 +711,15 @@ function executionEngineFrameStep() {
         }
     });
 
-    // CRUCIAL RECONCILIATION GUARD: Bypass processing if asset async population is pending
-    if (!characterGraphicsWrapperGroup) return;
+    // CRUCIAL RUNTIME RECONCILIATION FIX: Update environment variables even while model graphics download
+    if (!characterGraphicsWrapperGroup) {
+        ChunkManager.updateInfiniteRadius(0, 0);
+        CelestialSystem.update(timeInSeconds, 0, 0);
+        renderer.render(scene, camera);
+        return; // Safely bypass player input maps until asset allocation finishes
+    }
 
-    // Kinematic Velocity Resolution
+    // Kinematic Velocity Calculations
     let calculatedMovementVelocity = GLOBAL_CONFIG.PLAYER.WALK_SPEED;
     if (EngineState.input.Shift) {
         calculatedMovementVelocity *= GLOBAL_CONFIG.PLAYER.RUN_MULTIPLIER;
@@ -715,7 +728,6 @@ function executionEngineFrameStep() {
     const forwardInputUnit = (EngineState.input.w ? 1 : 0) - (EngineState.input.s ? 1 : 0);
     const sideInputUnit = (EngineState.input.d ? 1 : 0) - (EngineState.input.a ? 1 : 0);
 
-    // Sync body angle directly to mouse horizontal tracker variables
     characterGraphicsWrapperGroup.rotation.y = EngineState.player.rotationY;
     cameraOffsetGroup.rotation.x = EngineState.player.tiltX;
 
@@ -725,11 +737,9 @@ function executionEngineFrameStep() {
     EngineState.player.position.x += directionalVector.x * calculatedMovementVelocity;
     EngineState.player.position.z += directionalVector.z * calculatedMovementVelocity;
 
-    // Process Environmental Gravity Vector Impacts
     EngineState.player.velocity.y += GLOBAL_CONFIG.PLAYER.GRAVITY;
     EngineState.player.position.y += EngineState.player.velocity.y;
 
-    // Mathematical Grid Collision Queries
     const terrainSlopeY = NoiseEngine.getLayeredHeight(EngineState.player.position.x, EngineState.player.position.z);
     
     if (EngineState.player.position.y <= terrainSlopeY) {
@@ -740,21 +750,18 @@ function executionEngineFrameStep() {
         EngineState.player.isGrounded = false;
     }
 
-    // Kinematic Jump Execution
     if (EngineState.input[' '] && EngineState.player.isGrounded) {
         EngineState.player.velocity.y = GLOBAL_CONFIG.PLAYER.JUMP_IMPULSE;
         EngineState.player.isGrounded = false;
     }
 
-    // Synchronize spatial transformation properties to calculated values
     characterGraphicsWrapperGroup.position.copy(EngineState.player.position);
 
-    // Update subordinate processing engine pipelines safely
+    // Update operational engine sub-loops
     ChunkManager.updateInfiniteRadius(EngineState.player.position.x, EngineState.player.position.z);
     CelestialSystem.update(timeInSeconds, EngineState.player.position.x, EngineState.player.position.z);
     ParticleSystem.update(EngineState.player.position.x, EngineState.player.position.z, timeInSeconds);
 
-    // Limb model step hopping animations based on movement flags
     const graphicModelRootNode = characterGraphicsWrapperGroup.children[0];
     const identityMovementActive = forwardInputUnit !== 0 || sideInputUnit !== 0;
 
@@ -766,29 +773,24 @@ function executionEngineFrameStep() {
         graphicModelRootNode.position.y = 0.22;
         graphicModelRootNode.rotation.x = -0.12;
     } else {
-        graphicModelRootNode.position.y = Math.sin(timeInSeconds * 2.2) * 0.03; // Quiescent idle breathing loop
+        graphicModelRootNode.position.y = Math.sin(timeInSeconds * 2.2) * 0.03;
         graphicModelRootNode.rotation.x = 0;
     }
 
-    // Camera perspective offset matrices based on F5 view toggling
+    // Dynamic camera calculations based on view selection indices
     if (EngineState.activePOV === 0) {
-        // Chase Close View
         camera.position.set(0, 3.2, -7.5);
         camera.lookAt(characterGraphicsWrapperGroup.position.clone().add(new THREE.Vector3(0, 1.3, 0)));
     } else if (EngineState.activePOV === 1) {
-        // Chase Far View
         camera.position.set(0, 5.5, -13.0);
         camera.lookAt(characterGraphicsWrapperGroup.position.clone().add(new THREE.Vector3(0, 1.6, 0)));
     } else {
-        // First Person View
         camera.position.set(0, GLOBAL_CONFIG.PLAYER.HEIGHT, 0.4);
         const lookTargetVector = new THREE.Vector3(0, 0, 5).applyQuaternion(cameraOffsetGroup.quaternion).applyQuaternion(characterGraphicsWrapperGroup.quaternion);
         camera.lookAt(characterGraphicsWrapperGroup.position.clone().add(lookTargetVector));
     }
 
-    // Render step execution
     renderer.render(scene, camera);
 }
 
-// Run continuous loop
 executionEngineFrameStep();
