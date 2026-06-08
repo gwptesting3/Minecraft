@@ -52,7 +52,8 @@ const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
 // Load your freshly partitioned file
-loader.load('dennis_split.glb', (gltf) => {
+// The "?v=1" at the end forces Cloudflare to treat this as a brand-new request
+loader.load('dennis_split.glb?v=1', (gltf) => {
     dennis = gltf.scene;
     dennis.position.set(0, ELEVATION_OFFSET, 0);
 
