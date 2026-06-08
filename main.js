@@ -3,598 +3,480 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 // ============================================================================
-// 1. ENGINE CONFIGURATION & STRUCTURAL PARAMETERS
+// 1. ADVANCED ENGINE CONFIGURATION & GLOBAL MATRICES
 // ============================================================================
-const ENGINE_CONFIG = {
-    SYSTEM: {
-        DEBUG_MODE: false,
-        SHADOW_RES: 4096,
-        RENDER_DISTANCE_MAX: 2000
-    },
+const CONFIG = {
     WORLD: {
-        MAP_DIMENSION: 600,       // Full width and length of explorable terrain
-        GEOMETRY_RESOLUTION: 300, // Vertex density grid allocation
-        SEA_LEVEL: -6.0,          // Absolute height threshold for deep lake volumes
-        SAND_LINE: -4.0,          // Coastal beach threshold
-        MOUNTAIN_LINE: 16.0,      // Summit rock threshold
-        CLIFF_FALLOFF: 0.78,      // Slope angle threshold forcing rock textures
-        SEED_ROTATION: 154.239    // Value constant for procedural generation mapping
+        DIMENSION: 600,
+        RESOLUTION: 250,
+        SEA_LEVEL: -6.0,
+        SAND_LINE: -4.0,
+        MOUNTAIN_LINE: 15.0,
+        DAY_CYCLE_DURATION: 300, // Complete loop from day to night in seconds (5 Minutes)
     },
     PLAYER: {
-        BASE_WALK_SPEED: 0.15,
-        SPRINT_BOOST: 1.7,
-        ROTATION_VELOCITY: 0.045,
-        GRAVITY_FORCE: -0.014,
-        INITIAL_JUMP_IMPULSE: 0.30,
-        HITBOX_EYE_OFFSET: 1.25,
-        BOUNDING_RADIUS: 0.5
+        WALK_SPEED: 0.16,
+        RUN_BOOST: 1.65,
+        GRAVITY: -0.015,
+        JUMP_FORCE: 0.33,
+        HEIGHT: 1.6,
+        MOUSE_SENSITIVITY: 0.002
     },
-    EFFECTS: {
-        CLOUDS_COUNT: 65,
-        FOLIAGE_DENSITY: 450,
-        RUINS_DENSITY: 12
+    PARTICLES: {
+        LEAF_COUNT: 400,
+        RUBBLE_COUNT: 150
     }
 };
 
 // ============================================================================
-// 2. GL LOGISTICS INITIALIZATION & CORE GRAPHICS PIPELINES
+// 2. STAGE, RENDERER, & HUD CROSSHAIR INITIALIZATION
 // ============================================================================
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xb2ebf2); // Ambient morning sky glow
-scene.fog = new THREE.FogExp2(0xb2ebf2, 0.01); // Extended horizon scaling
 
-const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, ENGINE_CONFIG.SYSTEM.RENDER_DISTANCE_MAX);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1500);
+// Camera wrapper group used to cleanly handle FPS Mouse rotations without breaking player physics
+const cameraOffsetGroup = new THREE.Group();
+cameraOffsetGroup.position.set(0, CONFIG.PLAYER.HEIGHT, 0);
+cameraOffsetGroup.add(camera);
 
-const renderer = new THREE.WebGLRenderer({ 
-    antialias: true, 
-    powerPreference: "high-performance",
-    logarithmicDepthBuffer: true 
-});
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 1.3; // Boosted baseline exposure to fix darkness
 document.body.appendChild(renderer.domElement);
 
+// Create HTML UI Crosshair Element
+const crosshair = document.createElement('div');
+crosshair.style.position = 'absolute';
+crosshair.style.top = '50%';
+crosshair.style.left = '50%';
+crosshair.style.width = '10px';
+crosshair.style.height = '10px';
+crosshair.style.border = '2px solid rgba(255, 255, 255, 0.8)';
+crosshair.style.borderRadius = '50%';
+crosshair.style.transform = 'translate(-50%, -50%)';
+crosshair.style.pointerEvents = 'none';
+document.body.appendChild(crosshair);
+
 // ============================================================================
-// 3. MATHEMATICAL MATRICES & ADVANCED NOISE SIMULATION SYNTHESIS
+// 3. MOUSE POINTER LOCK ENGINE SYSTEM
 // ============================================================================
-const MathSynthesis = {
-    fractionalNoise2D(x, z) {
-        let fractureX = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453123;
-        return fractureX - Math.floor(fractureX);
-    },
+let isPointerLocked = false;
+renderer.domElement.addEventListener('click', () => {
+    renderer.domElement.requestPointerLock();
+});
 
-    interpolatedValueNoise2D(x, z) {
-        const integerX = Math.floor(x);
-        const integerZ = Math.floor(z);
-        const fractionalX = x - integerX;
-        const fractionalZ = z - integerZ;
+document.addEventListener('pointerlockchange', () => {
+    isPointerLocked = document.pointerLockElement === renderer.domElement;
+});
 
-        const nodeA = this.fractionalNoise2D(integerX, integerZ);
-        const nodeB = this.fractionalNoise2D(integerX + 1, integerZ);
-        const nodeC = this.fractionalNoise2D(integerX, integerZ + 1);
-        const nodeD = this.fractionalNoise2D(integerX + 1, integerZ + 1);
-
-        const fadeX = fractionalX * fractionalX * (3.0 - 2.0 * fractionalX);
-        const fadeZ = fractionalZ * fractionalZ * (3.0 - 2.0 * fractionalZ);
-
-        return THREE.MathUtils.lerp(nodeA, nodeB, fadeX) + (nodeC - nodeA) * fadeZ * (1.0 - fadeX) + (nodeD - nodeB) * fadeX * fadeZ;
-    },
-
-    getLayeredFractalTopology(x, z) {
-        // Multi-octave synthesis mapping global mountains, local valleys, and paths
-        let cumulativeAmplitude = 0;
+document.addEventListener('mousemove', (e) => {
+    if (!isPointerLocked) return;
+    const playerGroup = scene.getObjectByName("playerGroup");
+    if (playerGroup) {
+        // Horizontal mouse motion turns player character model body
+        playerGroup.rotation.y -= e.movementX * CONFIG.PLAYER.MOUSE_SENSITIVITY;
         
-        // Octome 1: Broad Macro Mountains
-        cumulativeAmplitude += this.interpolatedValueNoise2D(x * 0.003, z * 0.003) * 32;
-        // Octome 2: Intermediate Rolling Gradients
-        cumulativeAmplitude += this.interpolatedValueNoise2D(x * 0.015, z * 0.012) * 12;
-        // Octome 3: Sheer Escarpment Cliff Modifiers
-        let cliffSignal = this.interpolatedValueNoise2D(x * 0.04, z * 0.04);
-        if (cliffSignal > 0.65) {
-            cumulativeAmplitude += (cliffSignal - 0.65) * 28; // Extrudes step cliff structures
-        }
-        // Octome 4: Microscopic Ground Surface Roughness
-        cumulativeAmplitude += this.interpolatedValueNoise2D(x * 0.18, z * 0.18) * 0.6;
-
-        // Drainage Basin System Math (Lakes and carved canyons)
-        const basinChannelX = Math.sin(z * 0.01) * 60 + Math.cos(z * 0.005) * 20;
-        const proximityToBasin = Math.abs(x - basinChannelX);
-        if (proximityToBasin < 40) {
-            const structuralDepression = (40 - proximityToBasin) / 40;
-            cumulativeAmplitude -= structuralDepression * structuralDepression * 22; // Lowers vectors to reservoir levels
-        }
-
-        return cumulativeAmplitude;
-    },
-
-    evaluateCaveDensityVolume(x, y, z) {
-        // 3D Scalar noise profile generating subterranean voids and pass-through tunnels
-        const primaryWave = this.interpolatedValueNoise2D(x * 0.06, z * 0.06);
-        const secondaryWave = Math.sin(y * 0.22) * 0.5 + 0.5;
-        const localizedDepthCondition = y < (this.getLayeredFractalTopology(x, z) - 3.0);
-        
-        if (localizedDepthCondition && (primaryWave + secondaryWave) / 2.0 < 0.38) {
-            return true; // Cavity condition active
-        }
-        return false;
-    }
-};
-
-// ============================================================================
-// 4. PROCEDURAL TEXTURE GENERATION LABS (HIGH-FIDELITY MAP PROCESSING)
-// ============================================================================
-const VisualTextureEngine = {
-    allocateCanvasContext(dimX, dimY) {
-        const buffer = document.createElement('canvas');
-        buffer.width = dimX;
-        buffer.height = dimY;
-        return { buffer, ctx: buffer.getContext('2d') };
-    },
-
-    synthesizeGrassPBR() {
-        const { buffer, ctx } = this.allocateCanvasContext(1024, 1024);
-        ctx.fillStyle = '#2e7d32'; // Deep Zelda moss base
-        ctx.fillRect(0, 0, 1024, 1024);
-        
-        for (let i = 0; i < 150000; i++) {
-            const intensity = Math.random();
-            ctx.fillStyle = intensity > 0.65 ? '#4caf50' : intensity > 0.3 ? '#1b5e20' : '#33691e';
-            ctx.fillRect(Math.random() * 1024, Math.random() * 1024, 2, Math.random() * 8 + 2);
-        }
-        
-        const mapOut = new THREE.CanvasTexture(buffer);
-        mapOut.wrapS = THREE.RepeatWrapping;
-        mapOut.wrapT = THREE.RepeatWrapping;
-        mapOut.repeat.set(16, 16);
-        return mapOut;
-    },
-
-    synthesizeCliffRockPBR() {
-        const { buffer, ctx } = this.allocateCanvasContext(1024, 1024);
-        ctx.fillStyle = '#546e7a'; // Mountain granite base
-        ctx.fillRect(0, 0, 1024, 1024);
-
-        for (let i = 0; i < 90000; i++) {
-            const colorTone = Math.floor(70 + Math.random() * 55);
-            ctx.fillStyle = `rgb(${colorTone},${colorTone + 4},${colorTone + 8})`;
-            ctx.fillRect(Math.random() * 1024, Math.random() * 1024, Math.random() * 14 + 2, 3);
-        }
-
-        const mapOut = new THREE.CanvasTexture(buffer);
-        mapOut.wrapS = THREE.RepeatWrapping;
-        mapOut.wrapT = THREE.RepeatWrapping;
-        mapOut.repeat.set(12, 12);
-        return mapOut;
-    },
-
-    synthesizeSandPBR() {
-        const { buffer, ctx } = this.allocateCanvasContext(512, 512);
-        ctx.fillStyle = '#e0cda9';
-        ctx.fillRect(0, 0, 512, 512);
-
-        for (let i = 0; i < 50000; i++) {
-            ctx.fillStyle = Math.random() > 0.5 ? '#f5e1bc' : '#cca876';
-            ctx.fillRect(Math.random() * 512, Math.random() * 512, 1, 1);
-        }
-
-        const mapOut = new THREE.CanvasTexture(buffer);
-        mapOut.wrapS = THREE.RepeatWrapping;
-        mapOut.wrapT = THREE.RepeatWrapping;
-        mapOut.repeat.set(8, 8);
-        return mapOut;
-    }
-};
-
-// Consolidated Materials Registry
-const MATERIAL_LABS = {
-    GRASS: new THREE.MeshStandardMaterial({ map: VisualTextureEngine.synthesizeGrassPBR(), roughness: 0.92, metalness: 0.02, vertexColors: true }),
-    CRAG_ROCK: new THREE.MeshStandardMaterial({ map: VisualTextureEngine.synthesizeCliffRockPBR(), roughness: 0.82, metalness: 0.12, vertexColors: true }),
-    COAST_SAND: new THREE.MeshStandardMaterial({ map: VisualTextureEngine.synthesizeSandPBR(), roughness: 0.96, metalness: 0.0, vertexColors: true }),
-    TEMPLE_STONE: new THREE.MeshStandardMaterial({ color: 0x78909c, roughness: 0.75, metalness: 0.15 }),
-    WATER_LIQUID: new THREE.MeshStandardMaterial({ color: 0x00acc1, transparent: true, opacity: 0.72, roughness: 0.08, metalness: 0.45 }),
-    TREE_TRUNK: new THREE.MeshStandardMaterial({ color: 0x3e2723, roughness: 0.95 }),
-    TREE_LEAVES: new THREE.MeshStandardMaterial({ color: 0x0e3a12, roughness: 0.88 })
-};
-
-// ============================================================================
-// 5. LANDSCAPE COMPOSITOR & STRUCTURAL GEOMETRY GENERATOR
-// ============================================================================
-const landscapeGeometry = new THREE.PlaneGeometry(
-    ENGINE_CONFIG.WORLD.MAP_DIMENSION, 
-    ENGINE_CONFIG.WORLD.MAP_DIMENSION, 
-    ENGINE_CONFIG.WORLD.GEOMETRY_RESOLUTION, 
-    ENGINE_CONFIG.WORLD.GEOMETRY_RESOLUTION
-);
-landscapeGeometry.rotateX(-Math.PI / 2);
-
-const vertexPositions = landscapeGeometry.attributes.position;
-const vertexColors = [];
-
-for (let i = 0; i < vertexPositions.count; i++) {
-    const vX = vertexPositions.getX(i);
-    const vZ = vertexPositions.getZ(i);
-    const vY = MathSynthesis.getLayeredFractalTopology(vX, vZ);
-    
-    vertexPositions.setY(i, vY);
-
-    // Contextual Color Weighting
-    const workingColor = new THREE.Color();
-    if (vY < ENGINE_CONFIG.WORLD.SAND_LINE + 1.0) {
-        workingColor.setHex(0xffffff); // Allocates weighting buffer for sand shader mapping
-    } else if (vY > ENGINE_CONFIG.WORLD.MOUNTAIN_LINE) {
-        workingColor.setHex(0xbbbbbb); // Alpine granite masking
-    } else {
-        workingColor.setHex(0xffffff); // General terrain base configuration
-    }
-    vertexColors.push(workingColor.r, workingColor.g, workingColor.b);
-}
-
-landscapeGeometry.setAttribute('color', new THREE.Float32BufferAttribute(vertexColors, 3));
-landscapeGeometry.computeVertexNormals();
-
-// Composite Mesh Instantiation (Using the primary material node)
-const worldTerrainMesh = new THREE.Mesh(landscapeGeometry, MATERIAL_LABS.GRASS);
-worldTerrainMesh.receiveShadow = true;
-worldTerrainMesh.castShadow = true;
-scene.add(worldTerrainMesh);
-
-// Dynamic Water Plane Array System (Simulating Lakes and Rivers)
-const waterBodyGeometry = new THREE.PlaneGeometry(ENGINE_CONFIG.WORLD.MAP_DIMENSION, ENGINE_CONFIG.WORLD.MAP_DIMENSION);
-const lakeWaterMesh = new THREE.Mesh(waterBodyGeometry, MATERIAL_LABS.WATER_LIQUID);
-lakeWaterMesh.rotation.x = -Math.PI / 2;
-lakeWaterMesh.position.y = ENGINE_CONFIG.WORLD.SEA_LEVEL;
-scene.add(lakeWaterMesh);
-
-// ============================================================================
-// 6. VOLUMETRIC CAVE ARCHITECTURES & GEOLOGICAL SUB-LAYERS
-// ============================================================================
-// Procedurally instantiates specific open-mouthed physical hollow structures over the map
-const caveInstanceGroup = new THREE.Group();
-scene.add(caveInstanceGroup);
-
-function compileSubterraneanCaveGrotto(targetX, targetZ) {
-    const baseFloor = MathSynthesis.getLayeredFractalTopology(targetX, targetZ);
-    if (baseFloor < ENGINE_CONFIG.WORLD.SAND_LINE + 5.0) return; // Avoid water filling cave interiors
-
-    // Form structurally modeled cave entrances out of stone cluster units
-    const entranceGroup = new THREE.Group();
-    entranceGroup.position.set(targetX, baseFloor - 2.0, targetZ);
-
-    const segmentBlock = new THREE.BoxGeometry(6, 6, 6);
-    // Outer arch rings
-    for (let theta = 0; theta < Math.PI; theta += 0.4) {
-        const archElement = new THREE.Mesh(segmentBlock, MATERIAL_LABS.CRAG_ROCK);
-        archElement.position.set(Math.cos(theta) * 12, Math.sin(theta) * 10, 0);
-        archElement.castShadow = true;
-        archElement.receiveShadow = true;
-        entranceGroup.add(archElement);
-    }
-    
-    // Carve interior stone lining down into the ground
-    const tunnelLiner = new THREE.Mesh(new THREE.CylinderGeometry(10, 11, 40, 8, 1, true), MATERIAL_LABS.CRAG_ROCK);
-    tunnelLiner.rotation.x = Math.PI / 2;
-    tunnelLiner.position.set(0, 0, 18);
-    entranceGroup.add(tunnelLiner);
-
-    caveInstanceGroup.add(entranceGroup);
-}
-
-// Spawns cave entrance zones securely across grid positions
-for (let cCoordinate = -150; cCoordinate <= 150; cCoordinate += 100) {
-    compileSubterraneanCaveGrotto(cCoordinate, cCoordinate * -0.5);
-}
-
-// ============================================================================
-// 7. ENVIRONMENT DESIGN (DYNAMIC ATMOSPHERE, SUN MATRICES, SKY SHADOWS)
-// ============================================================================
-const sunDirectionalLight = new THREE.DirectionalLight(0xfffde7, 1.35);
-sunDirectionalLight.position.set(150, 300, 150);
-sunDirectionalLight.castShadow = true;
-sunDirectionalLight.shadow.mapSize.width = ENGINE_CONFIG.SYSTEM.SHADOW_RES;
-sunDirectionalLight.shadow.mapSize.height = ENGINE_CONFIG.SYSTEM.SHADOW_RES;
-sunDirectionalLight.shadow.camera.near = 1.0;
-sunDirectionalLight.shadow.camera.far = 800;
-
-const boundarySpread = 250;
-sunDirectionalLight.shadow.camera.left = -boundarySpread;
-sunDirectionalLight.shadow.camera.right = boundarySpread;
-sunDirectionalLight.shadow.camera.top = boundarySpread;
-sunDirectionalLight.shadow.camera.bottom = -boundarySpread;
-sunDirectionalLight.shadow.bias = -0.0003;
-scene.add(sunDirectionalLight);
-
-// Skybox Cloud Layer Composer
-const structuralCloudGroup = new THREE.Group();
-const elementCloudGeometry = new THREE.DodecahedronGeometry(15, 1);
-const networkCloudMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.78 });
-
-for (let cIdx = 0; cIdx < ENGINE_CONFIG.EFFECTS.CLOUDS_COUNT; cIdx++) {
-    const singleCloudBase = new THREE.Group();
-    
-    // Cluster components to form organic, non-blocky shapes
-    for (let cluster = 0; cluster < 4; cluster++) {
-        const blob = new THREE.Mesh(elementCloudGeometry, networkCloudMaterial);
-        blob.position.set(cluster * 12, (Math.random() - 0.5) * 4, (Math.random() - 0.5) * 8);
-        blob.scale.set(1.2, 0.8, 1.0);
-        singleCloudBase.add(blob);
-    }
-
-    singleCloudBase.position.set(
-        (Math.random() - 0.5) * ENGINE_CONFIG.WORLD.MAP_DIMENSION,
-        90 + Math.random() * 30,
-        (Math.random() - 0.5) * ENGINE_CONFIG.WORLD.MAP_DIMENSION
-    );
-    structuralCloudGroup.add(singleCloudBase);
-}
-scene.add(structuralCloudGroup);
-
-// ============================================================================
-// 8. STRUCTURAL MODEL BUILDERS (ASSET GENERATION PARSING)
-// ============================================================================
-const engineAssetClusterGroup = new THREE.Group();
-scene.add(engineAssetClusterGroup);
-
-function instantiateProceduralTreeAsset(coordX, coordY, coordZ) {
-    const individualTreeContainer = new THREE.Group();
-    individualTreeContainer.position.set(coordX, coordY, coordZ);
-
-    const trunkStemMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 5.0, 7), MATERIAL_LABS.TREE_TRUNK);
-    trunkStemMesh.position.y = 2.5;
-    trunkStemMesh.castShadow = true;
-    trunkStemMesh.receiveShadow = true;
-    individualTreeContainer.add(trunkStemMesh);
-
-    const canopyVolumeMesh = new THREE.Mesh(new THREE.SphereGeometry(2.4, 6, 6), MATERIAL_LABS.TREE_LEAVES);
-    canopyVolumeMesh.position.y = 5.2;
-    canopyVolumeMesh.scale.set(1.0, 1.3, 1.0);
-    canopyVolumeMesh.castShadow = true;
-    individualTreeContainer.add(canopyVolumeMesh);
-
-    engineAssetClusterGroup.add(individualTreeContainer);
-}
-
-function instantiateProceduralAncientShrine(coordX, coordY, coordZ) {
-    const templeBaseGroup = new THREE.Group();
-    templeBaseGroup.position.set(coordX, coordY, coordZ);
-
-    // Multi-tiered foundation blocks
-    const lowerPlinth = new THREE.Mesh(new THREE.BoxGeometry(14, 2.5, 14), MATERIAL_LABS.TEMPLE_STONE);
-    lowerPlinth.position.y = 1.25;
-    lowerPlinth.castShadow = true;
-    lowerPlinth.receiveShadow = true;
-    templeBaseGroup.add(lowerPlinth);
-
-    const colonnadePillarGeo = new THREE.CylinderGeometry(0.4, 0.4, 6.0, 8);
-    for (let offsetX of [-5, 5]) {
-        for (let offsetZ of [-5, 5]) {
-            const pillarColumn = new THREE.Mesh(colonnadePillarGeo, MATERIAL_LABS.TEMPLE_STONE);
-            pillarColumn.position.set(offsetX, 5.5, offsetZ);
-            pillarColumn.castShadow = true;
-            pillarColumn.receiveShadow = true;
-            templeBaseGroup.add(pillarColumn);
-        }
-    }
-
-    const architraveRoof = new THREE.Mesh(new THREE.BoxGeometry(13.5, 2.0, 13.5), MATERIAL_LABS.TEMPLE_STONE);
-    architraveRoof.position.y = 9.5;
-    architraveRoof.castShadow = true;
-    templeBaseGroup.add(architraveRoof);
-
-    engineAssetClusterGroup.add(templeBaseGroup);
-}
-
-// Distribute Asset Infrastructure across valid dry zones
-for (let entityIdx = 0; entityIdx < ENGINE_CONFIG.EFFECTS.FOLIAGE_DENSITY; entityIdx++) {
-    const placementX = (Math.random() - 0.5) * (ENGINE_CONFIG.WORLD.MAP_DIMENSION - 60);
-    const placementZ = (Math.random() - 0.5) * (ENGINE_CONFIG.WORLD.MAP_DIMENSION - 60);
-    const spatialYHeight = MathSynthesis.getLayeredFractalTopology(placementX, placementZ);
-
-    if (spatialYHeight > ENGINE_CONFIG.WORLD.SAND_LINE + 3.0 && spatialYHeight < ENGINE_CONFIG.WORLD.MOUNTAIN_LINE - 2.0) {
-        if (Math.random() > 0.97 && entityIdx < ENGINE_CONFIG.EFFECTS.RUINS_DENSITY) {
-            instantiateProceduralAncientShrine(placementX, spatialYHeight - 0.5, placementZ);
-        } else {
-            instantiateProceduralTreeAsset(placementX, spatialYHeight - 0.2, placementZ);
-        }
-    }
-}
-
-// ============================================================================
-// 9. OBJECT LOADING (PLAYABLE CHARACTER LOGISTICS FRAMEWORKS)
-// ============================================================================
-let playableCharacterModel;
-const runtimePlayerPhysicsState = {
-    coordinateVector: new THREE.Vector3(0, 25, 0), // Airborne entry drop position
-    velocityVector: new THREE.Vector3(0, 0, 0),
-    isGroundedOnSurface: false
-};
-
-const internalDracoDecoderUnit = new DRACOLoader();
-internalDracoDecoderUnit.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
-const mainGLTFLoaderRef = new GLTFLoader();
-mainGLTFLoaderRef.setDRACOLoader(internalDracoDecoderUnit);
-
-mainGLTFLoaderRef.load('dennis.glb', (resourceFile) => {
-    playableCharacterModel = resourceFile.scene;
-    
-    const structuralPlayerContainer = new THREE.Group();
-    structuralPlayerContainer.name = "heroRuntimeNode";
-    structuralPlayerContainer.position.copy(runtimePlayerPhysicsState.coordinateVector);
-    structuralPlayerContainer.scale.set(0.65, 0.65, 0.65);
-    structuralPlayerContainer.add(playableCharacterModel);
-    scene.add(structuralPlayerContainer);
-
-    playableCharacterModel.traverse((nodeElement) => {
-        if (nodeElement.isMesh) {
-            nodeElement.castShadow = true;
-            nodeElement.receiveShadow = true;
-        }
-    });
-}, undefined, (errorObject) => console.error("Asset Loader Failure Stack:", errorObject));
-
-// ============================================================================
-// 10. INPUT REGISTER MANAGEMENT & CRITICAL FIX POVS MULTIPLEXER
-// ============================================================================
-const hardwareInputRegistry = { w: false, a: false, s: false, d: false, Shift: false, ' ': false };
-const runtimePOVModes = { FIRST_PERSON: 0, THIRD_PERSON_REAR: 1, THIRD_PERSON_FRONT: 2 };
-let systemActivePOV = runtimePOVModes.THIRD_PERSON_REAR;
-
-window.addEventListener('keydown', (eventContext) => {
-    if (eventContext.key in hardwareInputRegistry) {
-        hardwareInputRegistry[eventContext.key] = true;
-    }
-    if (eventContext.key === ' ') hardwareInputRegistry[' '] = true;
-    
-    // CRUCIAL FIX: Stop F5 from resetting the browser execution script scope stack
-    if (eventContext.key === 'F5') {
-        eventContext.preventDefault(); // Prevents page reload!
-        systemActivePOV = (systemActivePOV + 1) % 3; // Cycles safely across internal states
+        // Vertical mouse motion tilts camera neck wrapper smoothly
+        cameraOffsetGroup.rotation.x -= e.movementY * CONFIG.PLAYER.MOUSE_SENSITIVITY;
+        cameraOffsetGroup.rotation.x = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, cameraOffsetGroup.rotation.x));
     }
 });
 
-window.addEventListener('keyup', (eventContext) => {
-    if (eventContext.key in hardwareInputRegistry) {
-        hardwareInputRegistry[eventContext.key] = false;
+// ============================================================================
+// 4. TEXTURE GENERATOR LABORATORIES (HIGH-FIDELITY GRAIN & DETAIL PACKS)
+// ============================================================================
+const TextureFactory = {
+    createContext(w, h) {
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        return { canvas, ctx: canvas.getContext('2d') };
+    },
+    generateGrass() {
+        const { canvas, ctx } = this.createContext(1024, 1024);
+        ctx.fillStyle = '#33691e';
+        ctx.fillRect(0, 0, 1024, 1024);
+        for (let i = 0; i < 200000; i++) {
+            ctx.fillStyle = Math.random() > 0.5 ? '#4caf50' : '#1b5e20';
+            ctx.fillRect(Math.random() * 1024, Math.random() * 1024, 2, Math.random() * 6 + 2);
+        }
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.repeat.set(12, 12);
+        return tex;
+    },
+    generateRockWithGrain() {
+        const { canvas, ctx } = this.createContext(1024, 1024);
+        ctx.fillStyle = '#455a64';
+        ctx.fillRect(0, 0, 1024, 1024);
+        // Add heavy stone noise grain details
+        for (let i = 0; i < 300000; i++) {
+            const grain = Math.floor(60 + Math.random() * 40);
+            ctx.fillStyle = `rgba(${grain},${grain},${grain + 5}, 0.15)`;
+            ctx.fillRect(Math.random() * 1024, Math.random() * 1024, 2, 2);
+        }
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.repeat.set(8, 8);
+        return tex;
     }
-    if (eventContext.key === ' ') hardwareInputRegistry[' '] = false;
+};
+
+const MATERIALS = {
+    GRASS: new THREE.MeshStandardMaterial({ map: TextureFactory.generateGrass(), roughness: 0.9, metalness: 0.05 }),
+    ROCK: new THREE.MeshStandardMaterial({ map: TextureFactory.generateRockWithGrain(), roughness: 0.8, metalness: 0.15 }),
+    RUIN_BRICK: new THREE.MeshStandardMaterial({ map: TextureFactory.generateRockWithGrain(), roughness: 0.75, color: 0x90a4ae }),
+    WATER: new THREE.MeshStandardMaterial({ color: 0x00695c, transparent: true, opacity: 0.75, roughness: 0.05, metalness: 0.6 }),
+    LEAF: new THREE.MeshStandardMaterial({ color: 0xffa726, roughness: 0.6, side: THREE.DoubleSide }), // Autumn colored wind leaves
+    RUBBLE: new THREE.MeshStandardMaterial({ color: 0x78909c, roughness: 0.85 })
+};
+
+// ============================================================================
+// 5. CELESTIAL DAY-TO-NIGHT SYSTEM (5 MINUTE CONTINUOUS REVOLUTION)
+// ============================================================================
+const CelestialEngine = {
+    sunLight: new THREE.DirectionalLight(0xfffde7, 1.5),
+    moonLight: new THREE.DirectionalLight(0x9fa8da, 0.4),
+    skyMesh: null,
+
+    init() {
+        // Setup direct shadow casting parameters for sun
+        this.sunLight.castShadow = true;
+        this.sunLight.shadow.mapSize.width = 2048;
+        this.sunLight.shadow.mapSize.height = 2048;
+        const d = 250;
+        this.sunLight.shadow.camera.left = -d;
+        this.sunLight.shadow.camera.right = d;
+        this.sunLight.shadow.camera.top = d;
+        this.sunLight.shadow.camera.bottom = -d;
+        this.sunLight.shadow.bias = -0.0004;
+        scene.add(this.sunLight);
+
+        // Setup moonlight shadow properties
+        this.moonLight.castShadow = true;
+        this.moonLight.shadow.mapSize.width = 1024;
+        this.moonLight.shadow.mapSize.height = 1024;
+        this.moonLight.shadow.camera.left = -d;
+        this.moonLight.shadow.camera.right = d;
+        this.moonLight.shadow.camera.top = d;
+        this.moonLight.shadow.camera.bottom = -d;
+        scene.add(this.moonLight);
+
+        // Build procedural visual Sky Dome Box
+        const skyGeo = new THREE.SphereGeometry(700, 32, 15);
+        const skyMat = new THREE.MeshBasicMaterial({ color: 0x81d4fa, side: THREE.BackSide });
+        this.skyMesh = new THREE.Mesh(skyGeo, skyMat);
+        scene.add(this.skyMesh);
+    },
+
+    update(time, pX, pZ) {
+        // Calculate orbital progress angle based on our configured length constant
+        const angle = (time / CONFIG.WORLD.DAY_CYCLE_DURATION) * Math.PI * 2;
+        
+        // Compute current celestial vectors centered over player tracking positions
+        const sunX = pX + Math.sin(angle) * 300;
+        const sunY = Math.cos(angle) * 300;
+        const sunZ = pZ + Math.sin(angle * 0.5) * 100;
+        this.sunLight.position.set(sunX, sunY, sunZ);
+
+        const moonX = pX - Math.sin(angle) * 300;
+        const moonY = -Math.cos(angle) * 300;
+        const moonZ = pZ - Math.sin(angle * 0.5) * 100;
+        this.moonLight.position.set(moonX, moonY, moonZ);
+
+        // Interpolate colors/intensities based on astronomical height checks
+        const dayFactor = Math.max(0, Math.min(1, sunY / 150)); // $0.0 = \text{Midnight}$, $1.0 = \text{Noon}$
+        
+        // Transition Sky Colors and fog variables
+        const skyColor = new THREE.Color(0x0a1128).lerp(new THREE.Color(0x81d4fa), dayFactor);
+        this.skyMesh.material.color.copy(skyColor);
+        scene.background.copy(skyColor);
+        scene.fog = new THREE.FogExp2(skyColor.getHex(), 0.01 + (1.0 - dayFactor) * 0.008);
+
+        // Adjust illumination strength to keep night exploreable but realistically dim
+        this.sunLight.intensity = dayFactor * 1.6;
+        this.moonLight.intensity = (1.0 - dayFactor) * 0.5;
+    }
+};
+CelestialEngine.init();
+
+// ============================================================================
+// 6. PROCEDURAL SMOOTH TERRAIN & ANCIENT RUINS ARCHITECTURES
+// ============================================================================
+function getTerrainHeight(x, z) {
+    let y = Math.sin(x * 0.008) * Math.cos(z * 0.008) * 22; // Mountains
+    y += Math.sin(x * 0.04) * Math.sin(z * 0.03) * 5;      // Slopes
+    
+    // Smooth valley river channel carve
+    const riverX = Math.sin(z * 0.02) * 35;
+    const distToRiver = Math.abs(x - riverX);
+    if (distToRiver < 30) {
+        const factor = (30 - distToRiver) / 30;
+        y -= factor * factor * 16;
+    }
+    return y;
+}
+
+const terrainGeo = new THREE.PlaneGeometry(CONFIG.WORLD.DIMENSION, CONFIG.WORLD.DIMENSION, CONFIG.WORLD.RESOLUTION, CONFIG.WORLD.RESOLUTION);
+terrainGeo.rotateX(-Math.PI / 2);
+
+const posAttr = terrainGeo.attributes.position;
+for (let i = 0; i < posAttr.count; i++) {
+    const tx = posAttr.getX(i);
+    const tz = posAttr.getZ(i);
+    posAttr.setY(i, getTerrainHeight(tx, tz));
+}
+terrainGeo.computeVertexNormals();
+
+const terrainMesh = new THREE.Mesh(terrainGeo, MATERIALS.GRASS);
+terrainMesh.receiveShadow = true;
+terrainMesh.castShadow = true;
+scene.add(terrainMesh);
+
+// Dynamic Animated Waves Water Plane
+const waterGeo = new THREE.PlaneGeometry(CONFIG.WORLD.DIMENSION, CONFIG.WORLD.DIMENSION, 60, 60);
+waterGeo.rotateX(-Math.PI / 2);
+const waterMesh = new THREE.Mesh(waterGeo, MATERIALS.WATER);
+waterMesh.position.y = CONFIG.WORLD.SEA_LEVEL;
+scene.add(waterMesh);
+
+// Realtime Architectural Ruins Spawning System
+const ruinsGroup = new THREE.Group();
+scene.add(ruinsGroup);
+
+function createDetailedRuinTemple(rx, rz) {
+    const ry = getTerrainHeight(rx, rz);
+    if (ry < CONFIG.WORLD.SAND_LINE + 2) return;
+
+    const templeContainer = new THREE.Group();
+    templeContainer.position.set(rx, ry, rz);
+
+    const blockGeo = new THREE.BoxGeometry(4, 2, 4);
+    // Build a segmented ruined wall frame
+    for (let floor = 0; floor < 4; floor++) {
+        const isBroken = Math.random() > 0.75;
+        if (!isBroken) {
+            const brickWall = new THREE.Mesh(blockGeo, MATERIALS.RUIN_BRICK);
+            brickWall.position.set(Math.sin(floor) * 2, floor * 2, 0);
+            brickWall.rotation.y = Math.random() * 0.2;
+            brickWall.castShadow = true;
+            brickWall.receiveShadow = true;
+            templeContainer.add(brickWall);
+        }
+    }
+    
+    // Spawn physical structural crumbling rubble piles beneath walls
+    for (let r = 0; r < 5; r++) {
+        const shard = new THREE.Mesh(new THREE.DodecahedronGeometry(0.8 + Math.random() * 0.6), MATERIALS.RUBBLE);
+        shard.position.set((Math.random() - 0.5) * 8, 0.2, (Math.random() - 0.5) * 8);
+        shard.rotation.set(Math.random() * 3, Math.random() * 3, 0);
+        shard.castShadow = true;
+        templeContainer.add(shard);
+    }
+
+    ruinsGroup.add(templeContainer);
+}
+
+// Distribute ruins arrays systematically across landscape quadratures
+for (let i = 0; i < 20; i++) {
+    const rx = (Math.random() - 0.5) * 450;
+    const rz = (Math.random() - 0.5) * 450;
+    createDetailedRuinTemple(rx, rz);
+}
+
+// ============================================================================
+// 7. REAL-TIME WIND PARTICLES & LEAVES INSTANCE EMITTERS
+// ============================================================================
+const ParticleEngine = {
+    leafMesh: null,
+    leafData: [],
+
+    init() {
+        const leafGeo = new THREE.BoxGeometry(0.4, 0.05, 0.6);
+        this.leafMesh = new THREE.InstancedMesh(leafGeo, MATERIALS.LEAF, CONFIG.PARTICLES.LEAF_COUNT);
+        this.leafMesh.castShadow = true;
+        scene.add(this.leafMesh);
+
+        const dummy = new THREE.Object3D();
+        for (let i = 0; i < CONFIG.PARTICLES.LEAF_COUNT; i++) {
+            const px = (Math.random() - 0.5) * CONFIG.WORLD.DIMENSION;
+            const pz = (Math.random() - 0.5) * CONFIG.WORLD.DIMENSION;
+            const py = getTerrainHeight(px, pz) + 10 + Math.random() * 30;
+
+            this.leafData.push({
+                pos: new THREE.Vector3(px, py, pz),
+                vel: new THREE.Vector3(-0.05 - Math.random() * 0.1, -0.02 - Math.random() * 0.04, (Math.random() - 0.5) * 0.05),
+                rot: new THREE.Vector3(Math.random() * Math.PI, Math.random() * Math.PI, 0),
+                rotSpeed: 0.02 + Math.random() * 0.03
+            });
+
+            dummy.position.copy(this.leafData[i].pos);
+            dummy.updateMatrix();
+            this.leafMesh.setMatrixAt(i, dummy.matrix);
+        }
+    },
+
+    update(pX, pZ) {
+        const dummy = new THREE.Object3D();
+        for (let i = 0; i < CONFIG.PARTICLES.LEAF_COUNT; i++) {
+            const data = this.leafData[i];
+            data.pos.add(data.vel);
+            data.rot.x += data.rotSpeed;
+            data.rot.y += data.rotSpeed * 0.5;
+
+            // Recycler pipeline resets dead leaves back in front of player perspective bounds
+            if (data.pos.y < getTerrainHeight(data.pos.x, data.pos.z) || data.pos.distanceTo(new THREE.Vector3(pX, data.pos.y, pZ)) > 150) {
+                data.pos.set(pX + (Math.random() - 0.5) * 100 + 40, getTerrainHeight(pX, pZ) + 20 + Math.random() * 20, pZ + (Math.random() - 0.5) * 100);
+            }
+
+            dummy.position.copy(data.pos);
+            dummy.rotation.set(data.rot.x, data.rot.y, data.rot.z);
+            dummy.updateMatrix();
+            this.leafMesh.setMatrixAt(i, dummy.matrix);
+        }
+        this.leafMesh.instanceMatrix.needsUpdate = true;
+    }
+};
+ParticleEngine.init();
+
+// ============================================================================
+// 8. OBJECT MANAGER (PLAYABLE CHARACTER SETUP FRAMEWORKS)
+// ============================================================================
+let playableHeroGroup;
+const physicsState = {
+    pos: new THREE.Vector3(0, 20, 0),
+    vel: new THREE.Vector3(0, 0, 0),
+    isGrounded: false
+};
+
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(dracoLoader);
+
+gltfLoader.load('dennis.glb', (gltf) => {
+    const dennisModel = gltf.scene;
+    playableHeroGroup = new THREE.Group();
+    playableHeroGroup.name = "playerGroup";
+    playableHeroGroup.position.copy(physicsState.pos);
+    playableHeroGroup.scale.set(0.65, 0.65, 0.65);
+    
+    playableHeroGroup.add(dennisModel);
+    playableHeroGroup.add(cameraOffsetGroup); // Mounts pointer-lock camera onto player center node
+    scene.add(playableHeroGroup);
+
+    dennisModel.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
 });
 
 // ============================================================================
-// 11. HIGH-PERFORMANCE RECURSIVE REALTIME GAME ENGINE LOOP
+// 9. INPUT SYSTEM MATRIX REGISTRATION
 // ============================================================================
-function runEngineFrameStepLoop() {
-    requestAnimationFrame(runEngineFrameStepLoop);
-    const systemTicksTime = performance.now() * 0.005;
+const keys = { w: false, a: false, s: false, d: false, Shift: false, ' ': false };
+let activePOV = 0; // 0 = Third Person Rear Close, 1 = Third Person Rear Far
 
-    // Atmospheric cloud translation animation
-    structuralCloudGroup.children.forEach((cloudCluster) => {
-        cloudCluster.position.x += 0.03;
-        if (cloudCluster.position.x > ENGINE_CONFIG.WORLD.MAP_DIMENSION / 2) {
-            cloudCluster.position.x = -ENGINE_CONFIG.WORLD.MAP_DIMENSION / 2;
-        }
-    });
+window.addEventListener('keydown', (e) => {
+    if (e.key in keys) keys[e.key] = true;
+    if (e.key === ' ') keys[' '] = true;
+    if (e.key === 'F5') {
+        e.preventDefault(); // FIX: Stops browser reloading page frame cycles
+        activePOV = (activePOV + 1) % 2;
+    }
+});
+window.addEventListener('keyup', (e) => {
+    if (e.key in keys) keys[e.key] = false;
+    if (e.key === ' ') keys[' '] = false;
+});
 
-    const runtimeHeroNode = scene.getObjectByName("heroRuntimeNode");
+// ============================================================================
+// 10. REALTIME RECURSIVE SYSTEM GAME PLAY ENGINE LOOP
+// ============================================================================
+function gameLoop() {
+    requestAnimationFrame(gameLoop);
+    const systemSecondsTime = performance.now() / 1000;
 
-    if (runtimeHeroNode) {
-        // Resolve target directional velocities
-        let structuralVelocityMagnifier = ENGINE_CONFIG.PLAYER.BASE_WALK_SPEED;
-        if (hardwareInputRegistry.Shift) {
-            structuralVelocityMagnifier *= ENGINE_CONFIG.PLAYER.SPRINT_BOOST;
-        }
+    // Realtime Water Fluid Mesh Wave Animation Loop Calculations
+    const waterPos = waterMesh.geometry.attributes.position;
+    for (let i = 0; i < waterPos.count; i++) {
+        const wx = waterPos.getX(i);
+        const wz = waterPos.getZ(i);
+        // Generates rolling liquid waves using mixed sine frequencies
+        const waveY = Math.sin(wx * 0.1 + systemSecondsTime * 1.5) * 0.25 + Math.cos(wz * 0.08 + systemSecondsTime * 1.2) * 0.2;
+        waterPos.setY(i, waveY);
+    }
+    waterMesh.geometry.computeVertexNormals();
+    waterMesh.geometry.attributes.position.needsUpdate = true;
 
-        const driveForwardUnits = (hardwareInputRegistry.w ? 1 : 0) - (hardwareInputRegistry.s ? 1 : 0);
-        const steerAngularUnits = (hardwareInputRegistry.a ? 1 : 0) - (hardwareInputRegistry.d ? 1 : 0);
+    const pGroup = scene.getObjectByName("playerGroup");
+    if (pGroup) {
+        let currentSpeed = CONFIG.PLAYER.WALK_SPEED;
+        if (keys.Shift) currentSpeed *= CONFIG.PLAYER.RUN_BOOST;
 
-        // Modify orientation matrix transform directly based on steering ticks
-        if (steerAngularUnits !== 0) {
-            runtimeHeroNode.rotation.y += steerAngularUnits * ENGINE_CONFIG.PLAYER.ROTATION_VELOCITY;
-        }
+        // Drive velocity directions matching camera perspective alignment vectors
+        const moveX = (keys.d ? 1 : 0) - (keys.a ? 1 : 0);
+        const moveZ = (keys.w ? 1 : 0) - (keys.s ? 1 : 0);
 
-        // Apply translational spatial vectors based on character mesh tracking angles
-        const projectionDirection = new THREE.Vector3(0, 0, driveForwardUnits).applyQuaternion(runtimeHeroNode.quaternion);
-        runtimePlayerPhysicsState.coordinateVector.x += projectionDirection.x * structuralVelocityMagnifier;
-        runtimePlayerPhysicsState.coordinateVector.z += projectionDirection.z * structuralVelocityMagnifier;
+        const localMovement = new THREE.Vector3(moveX, 0, moveZ).normalize().applyQuaternion(pGroup.quaternion);
+        physicsState.pos.x += localMovement.x * currentSpeed;
+        physicsState.pos.z += localMovement.z * currentSpeed;
 
-        // Process Environmental Gravitational Forces
-        runtimePlayerPhysicsState.velocityVector.y += ENGINE_CONFIG.PLAYER.GRAVITY_FORCE;
-        runtimePlayerPhysicsState.coordinateVector.y += runtimePlayerPhysicsState.velocityVector.y;
+        // Apply gravitational physics equations constants down every frame step loop
+        physicsState.vel.y += CONFIG.PLAYER.GRAVITY;
+        physicsState.pos.y += physicsState.vel.y;
 
-        // Query the mathematical surface terrain value right at coordinate matrix junctions
-        const topologicalTargetY = MathSynthesis.getLayeredFractalTopology(
-            runtimePlayerPhysicsState.coordinateVector.x, 
-            runtimePlayerPhysicsState.coordinateVector.z
-        );
-
-        // RESOLVE COLLISION: Ground constraint check
-        if (runtimePlayerPhysicsState.coordinateVector.y <= topologicalTargetY) {
-            runtimePlayerPhysicsState.coordinateVector.y = topologicalTargetY;
-            runtimePlayerPhysicsState.velocityVector.y = 0;
-            runtimePlayerPhysicsState.isGroundedOnSurface = true;
+        const currentGroundY = getTerrainHeight(physicsState.pos.x, physicsState.pos.z);
+        if (physicsState.pos.y <= currentGroundY) {
+            physicsState.pos.y = currentGroundY;
+            physicsState.vel.y = 0;
+            physicsState.isGrounded = true;
         } else {
-            runtimePlayerPhysicsState.isGroundedOnSurface = false;
+            physicsState.isGrounded = false;
         }
 
-        // EXECUTE JUMP VELOCITY TRIGGERS
-        if (hardwareInputRegistry[' '] && runtimePlayerPhysicsState.isGroundedOnSurface) {
-            runtimePlayerPhysicsState.velocityVector.y = ENGINE_CONFIG.PLAYER.INITIAL_JUMP_IMPULSE;
-            runtimePlayerPhysicsState.isGroundedOnSurface = false;
+        if (keys[' '] && physicsState.isGrounded) {
+            physicsState.vel.y = CONFIG.PLAYER.JUMP_FORCE;
+            physicsState.isGrounded = false;
         }
 
-        // Synchronize the graphic container transformation coordinates directly to our mathematical trackers
-        runtimeHeroNode.position.copy(runtimePlayerPhysicsState.coordinateVector);
+        pGroup.position.copy(physicsState.pos);
 
-        // Drive leg movement hopping animations on the internal model geometry nodes
-        const activeCharacterMesh = runtimeHeroNode.children[0];
-        const motionFlagActive = driveForwardUnits !== 0;
+        // Limb mesh bobs
+        const innerMesh = pGroup.children[0];
+        const isMoving = moveX !== 0 || moveZ !== 0;
 
-        if (!runtimePlayerPhysicsState.isGroundedOnSurface) {
-            // Airtime structural posing configuration
-            activeCharacterMesh.position.y = 0.25;
-            activeCharacterMesh.rotation.x = -0.15;
-        } else if (motionFlagActive) {
-            const locomotiveRhythm = hardwareInputRegistry.Shift ? 6.2 : 4.4;
-            activeCharacterMesh.position.y = Math.abs(Math.sin(systemTicksTime * locomotiveRhythm)) * 0.42;
-            activeCharacterMesh.rotation.x = Math.sin(systemTicksTime * locomotiveRhythm) * 0.15;
+        if (isMoving && physicsState.isGrounded) {
+            const cadence = keys.Shift ? 6.5 : 4.5;
+            innerMesh.position.y = Math.abs(Math.sin(systemSecondsTime * cadence)) * 0.4;
+            innerMesh.rotation.x = Math.sin(systemSecondsTime * cadence) * 0.12;
+        } else if (!physicsState.isGrounded) {
+            innerMesh.position.y = 0.2;
+            innerMesh.rotation.x = -0.1;
         } else {
-            activeCharacterMesh.position.y = Math.sin(systemTicksTime * 0.6) * 0.035; // Breathing rhythm idle animation
-            activeCharacterMesh.rotation.x = 0;
+            innerMesh.position.y = Math.sin(systemSecondsTime * 2.0) * 0.03;
+            innerMesh.rotation.x = 0;
         }
 
-        // Lock directional shadow depth projection matrices right over the player group bounds
-        sunDirectionalLight.position.set(
-            runtimePlayerPhysicsState.coordinateVector.x + 80, 
-            260, 
-            runtimePlayerPhysicsState.coordinateVector.z + 80
-        );
-        sunDirectionalLight.target = runtimeHeroNode;
+        // Run updates on our modular subsystems
+        CelestialEngine.update(systemSecondsTime, physicsState.pos.x, physicsState.pos.z);
+        ParticleEngine.update(physicsState.pos.x, physicsState.pos.z);
 
-        // ====================================================================
-        // 12. HIGH-STABILITY MULTI-POV VIEWPORTS PROCESSING (ANTI-JITTER ENGINE)
-        // ====================================================================
-        let calculatedCameraOffsetOffset;
-        let focalTargetFocusPosition;
-
-        switch (systemActivePOV) {
-            case runtimePOVModes.FIRST_PERSON:
-                calculatedCameraOffsetOffset = new THREE.Vector3(0, ENGINE_CONFIG.PLAYER.HITBOX_EYE_OFFSET, 0.25);
-                camera.position.copy(calculatedCameraOffsetOffset.applyMatrix4(runtimeHeroNode.matrixWorld));
-                
-                focalTargetFocusPosition = runtimeHeroNode.localToWorld(new THREE.Vector3(0, ENGINE_CONFIG.PLAYER.HITBOX_EYE_OFFSET, 3));
-                camera.lookAt(focalTargetFocusPosition);
-                runtimeHeroNode.visible = false; // Prevents viewing internal face components inside head capsule
-                break;
-                
-            case runtimePOVModes.THIRD_PERSON_REAR:
-                calculatedCameraOffsetOffset = new THREE.Vector3(0, 3.0, -7.0);
-                camera.position.copy(calculatedCameraOffsetOffset.applyMatrix4(runtimeHeroNode.matrixWorld));
-                
-                focalTargetFocusPosition = runtimeHeroNode.localToWorld(new THREE.Vector3(0, 0.7, 0));
-                camera.lookAt(focalTargetFocusPosition);
-                runtimeHeroNode.visible = true;
-                break;
-
-            case runtimePOVModes.THIRD_PERSON_FRONT:
-                calculatedCameraOffsetOffset = new THREE.Vector3(0, 3.0, 8.0);
-                camera.position.copy(calculatedCameraOffsetOffset.applyMatrix4(runtimeHeroNode.matrixWorld));
-                
-                focalTargetFocusPosition = runtimeHeroNode.localToWorld(new THREE.Vector3(0, 0.7, 0));
-                camera.lookAt(focalTargetFocusPosition);
-                runtimeHeroNode.visible = true;
-                break;
+        // Dynamic Camera distance view toggling tracking logic based on F5 indexes
+        if (activePOV === 0) {
+            camera.position.set(0, 2.5, -6.5); // Close Chase perspective view
+            camera.lookAt(pGroup.position.clone().add(new THREE.Vector3(0, 1.2, 0)));
+        } else {
+            camera.position.set(0, 4.5, -11.0); // Distant battlefield overview perspective view
+            camera.lookAt(pGroup.position.clone().add(new THREE.Vector3(0, 1.5, 0)));
         }
     }
 
     renderer.render(scene, camera);
 }
+gameLoop();
 
-// Fire execution pipeline
-runEngineFrameStepLoop();
-
-// Dynamic screen resizing updates
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
