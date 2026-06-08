@@ -13,7 +13,6 @@ camera.position.set(0, 3, 5);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
-renderer.localClippingEnabled = true; // Crucial for Option 1 slicing
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 document.body.appendChild(renderer.domElement);
@@ -42,20 +41,10 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true; 
 scene.add(floor);
 
-// 5. Group Containers for Slices
+// 5. Loading Dennis as One Solid Object
+let dennis;
 const ELEVATION_OFFSET = 0.5; 
-const frontHalfGroup = new THREE.Group();
-const backHalfGroup = new THREE.Group();
-frontHalfGroup.position.y = ELEVATION_OFFSET;
-backHalfGroup.position.y = ELEVATION_OFFSET;
-scene.add(frontHalfGroup);
-scene.add(backHalfGroup);
 
-// Slicing Planes (Facing opposite directions)
-const clipFront = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);
-const clipBack = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
-
-// 6. Loading Dennis
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
@@ -63,62 +52,36 @@ const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
 loader.load('dennis.glb', (gltf) => {
-    const originalModel = gltf.scene;
+    dennis = gltf.scene;
+    dennis.position.set(0, ELEVATION_OFFSET, 0);
 
-    originalModel.traverse((child) => {
+    dennis.traverse((child) => {
         if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
         }
     });
 
-    // Setup Front Half Mesh
-    const frontClone = originalModel.clone();
-    frontClone.traverse((child) => {
-        if (child.isMesh && child.material) {
-            child.material = child.material.clone(); 
-            child.material.clippingPlanes = [clipFront];
-        }
-    });
-    frontHalfGroup.add(frontClone);
-
-    // Setup Back Half Mesh
-    const backClone = originalModel.clone();
-    backClone.traverse((child) => {
-        if (child.isMesh && child.material) {
-            child.material = child.material.clone();
-            child.material.clippingPlanes = [clipBack];
-        }
-    });
-    backHalfGroup.add(backClone);
-
+    scene.add(dennis);
 }, undefined, (error) => {
     console.error('Error loading Dennis:', error);
 });
 
-// 7. Animation Loop
+// 6. Animation Loop
 function animate() {
     requestAnimationFrame(animate);
 
-    const time = performance.now() * 0.004; 
+    const time = performance.now() * 0.005; 
     controls.update();
 
-    if (frontHalfGroup.children.length > 0 && backHalfGroup.children.length > 0) {
-        // Slide them back and forth like sliding blocks
-        const slideOffset = Math.sin(time) * 0.15;
-        
-        frontHalfGroup.position.z = slideOffset;
-        backHalfGroup.position.z = -slideOffset;
+    if (dennis) {
+        // Minecraft hopping/bobbing animation applied to his entire body
+        // Math.abs turns the sin wave into sharp, rhythmic bounces off the ground
+        const hopHeight = Math.abs(Math.sin(time * 2)) * 0.25;
+        dennis.position.y = ELEVATION_OFFSET + hopHeight;
 
-        // FIX: Update clipping plane constants dynamically so the cut stays perfectly 
-        // pinned to the world center (0), preventing the overlaps seen in your screenshot!
-        clipFront.constant = slideOffset;
-        clipBack.constant = -slideOffset;
-
-        // Classic bouncy step bobbing
-        const bobbing = Math.abs(Math.sin(time * 2)) * 0.05;
-        frontHalfGroup.position.y = ELEVATION_OFFSET + bobbing;
-        backHalfGroup.position.y = ELEVATION_OFFSET + bobbing;
+        // Add a slight tilt forward and backward matching the rhythm of the bounce
+        dennis.rotation.x = Math.sin(time * 2) * 0.08;
     }
 
     renderer.render(scene, camera);
