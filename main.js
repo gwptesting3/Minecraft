@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; // 1. Import Draco
 
-// 1. Basic Setup
+// Basic Setup
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -17,18 +18,28 @@ scene.add(directionalLight);
 
 camera.position.set(0, 2, 5);
 
-// 2. Variables for Dennis and his Limbs
+// Variables for Dennis and his Limbs
 let dennis, head, legFL, legFR, legBL, legBR;
-let isWalking = true; // Set to false to see the idle look
+let isWalking = true; 
 
-// 3. Load the Model
+// 2. Set up the DRACOLoader
+const dracoLoader = new DRACOLoader();
+// This points to Google's official hosted decoder libraries
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+
+// 3. Set up the GLTFLoader and link the DRACOLoader to it
 const loader = new GLTFLoader();
+loader.setDRACOLoader(dracoLoader);
+
+// 4. Load the Model
 loader.load('dennis.glb', (gltf) => {
     dennis = gltf.scene;
     scene.add(dennis);
 
-    // AI meshes often have distinct sub-names. 
-    // We traverse the model to find parts containing keywords.
+    // Center Dennis in the world
+    dennis.position.set(0, 0, 0);
+
+    // Traverse the model to find parts containing keywords
     dennis.traverse((child) => {
         if (child.isMesh || child.isGroup) {
             const name = child.name.toLowerCase();
@@ -42,33 +53,31 @@ loader.load('dennis.glb', (gltf) => {
         }
     });
 
-    // Fallback: If the AI didn't name them nicely, log all names to your browser console
     console.log("Found body parts:", { head, legFL, legFR, legBL, legBR });
 }, undefined, (error) => {
     console.error('Error loading Dennis:', error);
 });
 
-// 4. The Animation Loop (Safe on Laptop Hardware!)
+// The Animation Loop
 function animate() {
     requestAnimationFrame(animate);
 
-    const time = performance.now() * 0.006; // Control speed here
+    const time = performance.now() * 0.006; 
 
     if (dennis) {
         if (isWalking) {
-            // Swing legs back and forth using a simple sine wave
+            // Swing legs back and forth
             if (legFL) legFL.rotation.x = Math.sin(time) * 0.4;
             if (legBR) legBR.rotation.x = Math.sin(time) * 0.4;
 
             if (legFR) legFR.rotation.x = -Math.sin(time) * 0.4;
             if (legBL) legBL.rotation.x = -Math.sin(time) * 0.4;
 
-            // Make Dennis's whole body bob slightly up and down
+            // Whole body bobbing
             dennis.position.y = Math.abs(Math.sin(time * 2)) * 0.1;
         } else {
-            // Idle breathing animation
+            // Idle
             if (head) head.rotation.y = Math.sin(time * 0.3) * 0.1;
-            // Reset legs to straight
             if (legFL) legFL.rotation.x = 0;
             if (legFR) legFR.rotation.x = 0;
             if (legBL) legBL.rotation.x = 0;
