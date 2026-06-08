@@ -35,13 +35,14 @@ loader.setDRACOLoader(dracoLoader);
 loader.load('dennis.glb', (gltf) => {
     dennis = gltf.scene;
     scene.add(dennis);
-
-    // Center Dennis in the world
     dennis.position.set(0, 0, 0);
 
-    // Traverse the model to find parts containing keywords
+    console.log("--- START OF MODEL PIECES ---");
     dennis.traverse((child) => {
-        if (child.isMesh || child.isGroup) {
+        if (child.name) {
+            // This prints every part name to your browser console
+            console.log("Part Name Found:", child.name); 
+            
             const name = child.name.toLowerCase();
             if (name.includes('head')) head = child;
             if (name.includes('leg') || name.includes('paw')) {
@@ -52,8 +53,9 @@ loader.load('dennis.glb', (gltf) => {
             }
         }
     });
+    console.log("--- END OF MODEL PIECES ---");
 
-    console.log("Found body parts:", { head, legFL, legFR, legBL, legBR });
+    console.log("Assigned parts:", { head, legFL, legFR, legBL, legBR });
 }, undefined, (error) => {
     console.error('Error loading Dennis:', error);
 });
