@@ -41,7 +41,7 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true; 
 scene.add(floor);
 
-// 5. Loading Dennis & Gathering Parts
+// 5. Loading Engine with On-Screen Diagnostics
 let dennis;
 let bodyParts = [];
 const ELEVATION_OFFSET = 0.6; 
@@ -52,8 +52,25 @@ dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5
 const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
-// Standard load path with absolutely zero URL modifications
-loader.load('dennis_walk.glb', (gltf) => {
+// Create an error element on screen if loading fails
+function showOnScreenError(msg) {
+    const el = document.createElement('div');
+    el.style.position = 'absolute';
+    el.style.top = '10px';
+    el.style.left = '10px';
+    el.style.background = 'rgba(255,0,0,0.8)';
+    el.style.color = 'white';
+    el.style.padding = '10px';
+    el.style.fontFamily = 'sans-serif';
+    el.style.zIndex = '9999';
+    el.innerHTML = msg;
+    document.body.appendChild(el);
+}
+
+// Check what filename you uploaded! Change 'dennis_walk.glb' here if it's named differently on GitHub!
+const targetModelFile = 'dennis_walk.glb'; 
+
+loader.load(targetModelFile, (gltf) => {
     dennis = gltf.scene;
     dennis.position.set(0, ELEVATION_OFFSET, 0);
 
@@ -67,10 +84,14 @@ loader.load('dennis_walk.glb', (gltf) => {
 
     scene.add(dennis);
 }, undefined, (error) => {
-    console.error("Error loading model:", error);
+    console.error("Error details:", error);
+    showOnScreenError(`<b>Failed to load model!</b><br>
+    1. Check your GitHub repository to ensure <b>${targetModelFile}</b> is spelled exactly like that.<br>
+    2. Make sure it isn't trapped inside a folder.<br>
+    3. Error caught: ${error.message}`);
 });
 
-// 6. Animation Loop
+// 6. Animation Loop (Rotates individual parts cleanly)
 function animate() {
     requestAnimationFrame(animate);
     
@@ -84,7 +105,7 @@ function animate() {
                 return; 
             }
 
-            // Move front pieces versus back pieces based on local center positions
+            // Move front pieces versus back pieces based on physical offsets
             const isFrontPiece = part.position.z > 0.01;
             const isBackPiece = part.position.z < -0.01;
 
