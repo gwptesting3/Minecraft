@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// 1. Scene & Renderer Setup
+// Scene & Renderer Setup
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xa5d6a7); 
 
@@ -13,17 +13,18 @@ camera.position.set(0, 3, 5);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
+renderer.localClippingEnabled = true; // Enables the code-slicing feature
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 document.body.appendChild(renderer.domElement);
 
-// 2. Spectator Camera Controls
+// Spectator Camera Controls
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.target.set(0, 0.5, 0);
 
-// 3. Lighting Setup
+// Lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.7); 
 scene.add(ambientLight);
 
@@ -32,7 +33,7 @@ sunLight.position.set(5, 8, 5);
 sunLight.castShadow = true;
 scene.add(sunLight);
 
-// 4. Ground Floor Setup
+// Floor Plane
 const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(40, 40),
     new THREE.MeshStandardMaterial({ color: 0x81c784, roughness: 0.8 })
@@ -41,80 +42,78 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true; 
 scene.add(floor);
 
-// 5. Loading Engine with On-Screen Diagnostics
-let dennis;
-let bodyParts = [];
-const ELEVATION_OFFSET = 0.6; 
+// Group containers for the two halves
+const ELEVATION_OFFSET = 0.5; 
+const frontHalfGroup = new THREE.Group();
+const backHalfGroup = new THREE.Group();
+frontHalfGroup.position.y = ELEVATION_OFFSET;
+backHalfGroup.position.y = ELEVATION_OFFSET;
+scene.add(frontHalfGroup);
+scene.add(backHalfGroup);
 
+// Slicing Math (Cuts perfectly down his middle)
+const sliceZLocation = 0.0; 
+const clipFront = new THREE.Plane(new THREE.Vector3(0, 0, -1), sliceZLocation);
+const clipBack = new THREE.Plane(new THREE.Vector3(0, 0, 1), -sliceZLocation);
+
+// Loading original dennis.glb
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
 const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
-// Create an error element on screen if loading fails
-function showOnScreenError(msg) {
-    const el = document.createElement('div');
-    el.style.position = 'absolute';
-    el.style.top = '10px';
-    el.style.left = '10px';
-    el.style.background = 'rgba(255,0,0,0.8)';
-    el.style.color = 'white';
-    el.style.padding = '10px';
-    el.style.fontFamily = 'sans-serif';
-    el.style.zIndex = '9999';
-    el.innerHTML = msg;
-    document.body.appendChild(el);
-}
+loader.load('dennis.glb', (gltf) => {
+    const originalModel = gltf.scene;
 
-// Check what filename you uploaded! Change 'dennis_walk.glb' here if it's named differently on GitHub!
-const targetModelFile = 'dennis_walk.glb'; 
-
-loader.load(targetModelFile, (gltf) => {
-    dennis = gltf.scene;
-    dennis.position.set(0, ELEVATION_OFFSET, 0);
-
-    dennis.traverse((child) => {
+    originalModel.traverse((child) => {
         if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
-            bodyParts.push(child);
         }
     });
 
-    scene.add(dennis);
+    // Create the Front Half Clone
+    const frontClone = originalModel.clone();
+    frontClone.traverse((child) => {
+        if (child.isMesh && child.material) {
+            child.material = child.material.clone(); 
+            child.material.clippingPlanes = [clipFront];
+        }
+    });
+    frontHalfGroup.add(frontClone);
+
+    // Create the Back Half Clone
+    const backClone = originalModel.clone();
+    backClone.traverse((child) => {
+        if (child.isMesh && child.material) {
+            child.material = child.material.clone();
+            child.material.clippingPlanes = [clipBack];
+        }
+    });
+    backHalfGroup.add(backClone);
+
 }, undefined, (error) => {
-    console.error("Error details:", error);
-    showOnScreenError(`<b>Failed to load model!</b><br>
-    1. Check your GitHub repository to ensure <b>${targetModelFile}</b> is spelled exactly like that.<br>
-    2. Make sure it isn't trapped inside a folder.<br>
-    3. Error caught: ${error.message}`);
+    console.error('Error loading original Dennis:', error);
 });
 
-// 6. Animation Loop (Rotates individual parts cleanly)
+// Animation Loop
 function animate() {
     requestAnimationFrame(animate);
-    
-    const time = performance.now() * 0.005;
+
+    const time = performance.now() * 0.004; 
     controls.update();
 
-    if (bodyParts.length > 0) {
-        bodyParts.forEach((part) => {
-            // Identify and skip core torso mesh
-            if (part.geometry && part.geometry.attributes.position.count > 2000) {
-                return; 
-            }
+    if (frontHalfGroup.children.length > 0 && backHalfGroup.children.length > 0) {
+        // FIXED MOTION: Instead of twisting open, the halves shift forward/backward smoothly.
+        // This simulates a walking stride without creating a gap in his belly!
+        frontHalfGroup.position.z = Math.sin(time) * 0.15;
+        backHalfGroup.position.z = -Math.sin(time) * 0.15;
 
-            // Move front pieces versus back pieces based on physical offsets
-            const isFrontPiece = part.position.z > 0.01;
-            const isBackPiece = part.position.z < -0.01;
-
-            if (isFrontPiece) {
-                part.rotation.x = Math.sin(time) * 0.35;
-            } else if (isBackPiece) {
-                part.rotation.x = -Math.sin(time) * 0.35;
-            }
-        });
+        // Subtle overall bobbing to make it feel alive
+        const bobbing = Math.abs(Math.sin(time * 2)) * 0.04;
+        frontHalfGroup.position.y = ELEVATION_OFFSET + bobbing;
+        backHalfGroup.position.y = ELEVATION_OFFSET + bobbing;
     }
 
     renderer.render(scene, camera);
