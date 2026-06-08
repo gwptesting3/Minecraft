@@ -2,225 +2,431 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
-// 1. Scene & Renderer Setup
+// ============================================================================
+// 1. ENGINE CONFIGURATION & GLOBAL CONSTANTS
+// ============================================================================
+const CONFIG = {
+    WORLD: {
+        CHUNK_SIZE: 32,          // Horizontal width/depth of each chunk
+        CHUNK_HEIGHT: 64,        // Vertical block limit
+        RENDER_DISTANCE: 2,      // Visual chunk radius around player
+        BLOCK_SIZE: 1,           // Scale of a single voxel unit
+        WATER_LEVEL: 12,         // Global sea level height
+        CAVE_THRESHOLD: 0.42,    // 3D noise density threshold for air pockets
+    },
+    PLAYER: {
+        SPEED: 0.14,
+        RUN_MULTIPLIER: 1.6,
+        ROTATION_SPEED: 0.045,
+        GRAVITY: -0.012,
+        JUMP_FORCE: 0.28,
+        HEIGHT: 1.6,             // Hitbox height dimension
+        RADIUS: 0.4              // Hitbox bounding width
+    }
+};
+
+// ============================================================================
+// 2. SYSTEM INITIALIZATION (SCENE, RENDERER, LOGISTICS)
+// ============================================================================
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x81d4fa); 
-scene.fog = new THREE.FogExp2(0x81d4fa, 0.012); // Fog hides chunk loading at the horizon
+scene.background = new THREE.Color(0x81d4fa);
+scene.fog = new THREE.FogExp2(0x81d4fa, 0.015);
 
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 
-// Lighting
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.45); 
+// ============================================================================
+// 3. TEXTURE GENERATOR ENGINE (ULTRA-REALISTIC PROCEDURAL PBR)
+// ============================================================================
+const TextureGenerator = {
+    createCanvas(width, height) {
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        return { canvas, ctx: canvas.getContext('2d') };
+    },
+    
+    generateGrass() {
+        const { canvas, ctx } = this.createCanvas(512, 512);
+        ctx.fillStyle = '#33691e';
+        ctx.fillRect(0, 0, 512, 512);
+        for (let i = 0; i < 40000; i++) {
+            ctx.fillStyle = Math.random() > 0.5 ? '#558b2f' : '#2e7d32';
+            ctx.fillRect(Math.random() * 512, Math.random() * 512, 2, 6);
+        }
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        return texture;
+    },
+
+    generateRock() {
+        const { canvas, ctx } = this.createCanvas(512, 512);
+        ctx.fillStyle = '#78909c';
+        ctx.fillRect(0, 0, 512, 512);
+        for (let i = 0; i < 15000; i++) {
+            const grey = Math.floor(90 + Math.random() * 40);
+            ctx.fillStyle = `rgb(${grey},${grey},${grey})`;
+            ctx.fillRect(Math.random() * 512, Math.random() * 512, Math.random() * 8, Math.random() * 4);
+        }
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        return texture;
+    },
+
+    generateSand() {
+        const { canvas, ctx } = this.createCanvas(256, 256);
+        ctx.fillStyle = '#cfb997';
+        ctx.fillRect(0, 0, 256, 256);
+        for (let i = 0; i < 30000; i++) {
+            ctx.fillStyle = Math.random() > 0.5 ? '#dfcbaf' : '#bfa987';
+            ctx.fillRect(Math.random() * 256, Math.random() * 256, 1, 1);
+        }
+        const texture = new THREE.CanvasTexture(canvas);
+        return texture;
+    }
+};
+
+// Material Registry
+const MATERIALS = {
+    GRASS: new THREE.MeshStandardMaterial({ map: TextureGenerator.generateGrass(), roughness: 0.9, metalness: 0.0 }),
+    ROCK: new THREE.MeshStandardMaterial({ map: TextureGenerator.generateRock(), roughness: 0.85, metalness: 0.1 }),
+    SAND: new THREE.MeshStandardMaterial({ map: TextureGenerator.generateSand(), roughness: 0.95, metalness: 0.0 }),
+    STONE_BRICK: new THREE.MeshStandardMaterial({ color: 0x546e7a, roughness: 0.7, metalness: 0.2 }),
+    LEAVES: new THREE.MeshStandardMaterial({ color: 0x1b5e20, roughness: 0.9 }),
+    WOOD: new THREE.MeshStandardMaterial({ color: 0x4e342e, roughness: 0.9 }),
+    WATER: new THREE.MeshStandardMaterial({ color: 0x0077be, transparent: true, opacity: 0.65, roughness: 0.15, metalness: 0.6 })
+};
+
+// ============================================================================
+// 4. ENVIRONMENT DESIGN (SUN, PLANETS, SKYBOX CLOUDS)
+// ============================================================================
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
 scene.add(ambientLight);
 
-const sunLight = new THREE.DirectionalLight(0xfffde7, 1.4); 
-sunLight.position.set(40, 150, 40);
+const sunLight = new THREE.DirectionalLight(0xfffdf0, 1.3);
+sunLight.position.set(120, 200, 100);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.width = 2048;
 sunLight.shadow.mapSize.height = 2048;
-const d = 80;
-sunLight.shadow.camera.left = -d;
-sunLight.shadow.camera.right = d;
-sunLight.shadow.camera.top = d;
-sunLight.shadow.camera.bottom = -d;
+sunLight.shadow.camera.near = 0.5;
+sunLight.shadow.camera.far = 500;
+const shadowDimension = 100;
+sunLight.shadow.camera.left = -shadowDimension;
+sunLight.shadow.camera.right = shadowDimension;
+sunLight.shadow.camera.top = shadowDimension;
+sunLight.shadow.camera.bottom = -shadowDimension;
+sunLight.shadow.bias = -0.0005;
 scene.add(sunLight);
 
-// 2. Endless Infinite World Generation Engine
-const CHUNK_SIZE = 40;     // Size of each world square
-const CHUNK_SEGMENTS = 20; // Mesh detail
-const RENDER_DISTANCE = 3; // How many chunks away load in all directions
-const loadedChunks = new Map(); // Keeps track of active chunks
+// Real-time Visual Sky Box Clouds
+const cloudGroup = new THREE.Group();
+const cloudGeometry = new THREE.BoxGeometry(12, 3, 16);
+const cloudMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
 
-// Pseudo-Random Noise generator to create consistent endless geography without external libraries
-function noise2D(x, z) {
-    let n = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453123;
-    return n - Math.floor(n);
+for (let i = 0; i < 40; i++) {
+    const cloud = new THREE.Mesh(cloudGeometry, cloudMaterial);
+    cloud.position.set((Math.random() - 0.5) * 400, 50 + Math.random() * 15, (Math.random() - 0.5) * 400);
+    cloudGroup.add(cloud);
 }
+scene.add(cloudGroup);
 
-function smoothNoise(x, z) {
-    // Large scales for massive mountains & deep valleys
-    let mountains = Math.sin(x * 0.005) * Math.cos(z * 0.005) * 25;
-    let cliffs = Math.sin(x * 0.02) * Math.sin(z * 0.02) > 0.3 ? 12 : 0; // Sudden cliffs
+// ============================================================================
+// 5. MATH ENGINES (PROCEDURAL NOISE & ADVANCED WORLD SCULPTING)
+// ============================================================================
+const NoiseEngine = {
+    // Math Simulates multi-octave 2D and 3D terrain density noises
+    seed: 4239.123,
     
-    // Medium scales for rolling valleys and beaches
-    let valleys = Math.cos(x * 0.03) * Math.sin(z * 0.03) * 6;
-    
-    // Winding River Calculation
-    let riverGrid = Math.sin(x * 0.01 + z * 0.01) * 30;
-    let distanceToRiver = Math.abs(z - riverGrid);
-    let riverCarve = 0;
-    if (distanceToRiver < 12) {
-        riverCarve = (12 - distanceToRiver) * -1.8; // Carves out river basins
+    hash2D(x, z) {
+        let n = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453123;
+        return n - Math.floor(n);
+    },
+
+    noise2D(x, z) {
+        const ix = Math.floor(x);
+        const iz = Math.floor(z);
+        const fx = x - ix;
+        const fz = z - iz;
+
+        // Bilinear interpolation smoothing
+        const a = this.hash2D(ix, iz);
+        const b = this.hash2D(ix + 1, iz);
+        const c = this.hash2D(ix, iz + 1);
+        const d = this.hash2D(ix + 1, iz + 1);
+
+        const ux = fx * fx * (3.0 - 2.0 * fx);
+        const uz = fz * fz * (3.0 - 2.0 * fz);
+
+        return THREE.MathUtils.lerp(a, b, ux) + (c - a) * uz * (1.0 - ux) + (d - b) * ux * uz;
+    },
+
+    getLayeredNoise(x, z) {
+        let v = 0;
+        v += this.noise2D(x * 0.004, z * 0.004) * 35; // Mountains scale
+        v += this.noise2D(x * 0.02, z * 0.02) * 10;   // Hills scale
+        v += this.noise2D(x * 0.1, z * 0.1) * 2;       // Fine details
+        return v;
+    },
+
+    get3DNoiseDensity(x, y, z) {
+        // Generates structural values for underground 3D caves networks
+        const baseNoise = this.noise2D(x * 0.05, z * 0.05);
+        const vertNoise = Math.sin(y * 0.15) * 0.5 + 0.5;
+        return (baseNoise + vertNoise) / 2;
     }
+};
 
-    return mountains + cliffs + valleys + riverCarve;
-}
+// ============================================================================
+// 6. VOXEL WORLD MANAGER & STRUCTURE BUILDERS
+// ============================================================================
+const WorldManager = {
+    chunks: new Map(),
+    blockGeometry: new THREE.BoxGeometry(CONFIG.WORLD.BLOCK_SIZE, CONFIG.WORLD.BLOCK_SIZE, CONFIG.WORLD.BLOCK_SIZE),
 
-// Get height at any absolute x, z coordinate in the endless universe
-function getAbsoluteHeight(x, z) {
-    let height = smoothNoise(x, z);
-    if (height < -5) height = -5; // Floor level for deep water basins/caves entry
-    return height;
-}
-
-// Procedural Asset Builders (Coded Trees and Temples so we don't need files)
-function createTree(x, y, z, chunkGroup) {
-    const trunkGeo = new THREE.CylinderGeometry(0.2, 0.3, 3, 5);
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5d4037, roughness: 0.9 });
-    const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-    trunk.position.set(x, y + 1.5, z);
-    trunk.castShadow = true;
-    
-    const leavesGeo = new THREE.ConeGeometry(1.5, 3, 5);
-    const leavesMat = new THREE.MeshStandardMaterial({ color: 0x2e7d32, roughness: 0.8 });
-    const leaves = new THREE.Mesh(leavesGeo, leavesMat);
-    leaves.position.set(x, y + 3.5, z);
-    leaves.castShadow = true;
-
-    chunkGroup.add(trunk, leaves);
-}
-
-function createAncientTemple(x, y, z, chunkGroup) {
-    const templeGroup = new THREE.Group();
-    templeGroup.position.set(x, y, z);
-
-    const baseGeo = new THREE.BoxGeometry(8, 2, 8);
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0xb0bec5, roughness: 0.9 }); // Ancient stone
-    const base = new THREE.Mesh(baseGeo, wallMat);
-    base.position.y = 1;
-    base.castShadow = true;
-    base.receiveShadow = true;
-    templeGroup.add(base);
-
-    // Pillars
-    const pillarGeo = new THREE.CylinderGeometry(0.3, 0.3, 4, 6);
-    for (let px of [-3, 3]) {
-        for (let pz of [-3, 3]) {
-            const pillar = new THREE.Mesh(pillarGeo, wallMat);
-            pillar.position.set(px, 4, pz);
-            pillar.castShadow = true;
-            templeGroup.add(pillar);
-        }
-    }
-
-    // Roof
-    const roofGeo = new THREE.ConeGeometry(6, 3, 4);
-    const roof = new THREE.Mesh(roofGeo, wallMat);
-    roof.position.y = 7;
-    roof.rotation.y = Math.PI / 4;
-    roof.castShadow = true;
-    templeGroup.add(roof);
-
-    chunkGroup.add(templeGroup);
-}
-
-// Generates an individual geographic chunk map square
-function generateChunk(chunkX, chunkZ) {
-    const key = `${chunkX},${chunkZ}`;
-    if (loadedChunks.has(key)) return;
-
-    const chunkGroup = new THREE.Group();
-    const geo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_SEGMENTS, CHUNK_SEGMENTS);
-    geo.rotateX(-Math.PI / 2);
-
-    const positions = geo.attributes.position;
-    const colors = [];
-
-    const startX = chunkX * CHUNK_SIZE;
-    const startZ = chunkZ * CHUNK_SIZE;
-
-    // Sculpt the terrain piece coordinates
-    for (let i = 0; i < positions.count; i++) {
-        const localX = positions.getX(i);
-        const localZ = positions.getZ(i);
-        const worldX = startX + localX + CHUNK_SIZE / 2;
-        const worldZ = startZ + localZ + CHUNK_SIZE / 2;
+    getBlockGlobal(x, y, yFloor, z) {
+        // Core structural analyzer for calculating solid voxel space configurations
+        if (y < 0 || y >= CONFIG.WORLD.CHUNK_HEIGHT) return null;
         
-        const y = getAbsoluteHeight(worldX, worldZ);
-        positions.setY(i, y);
-
-        // Biome Coloring Logic (Beaches, Rivers, Mountains, Plains)
-        const color = new THREE.Color();
-        if (y < -3.5) {
-            color.setHex(0xc2b280); // Sand beaches & river beds
-        } else if (y > 14) {
-            color.setHex(0xcfd8dc); // High mountain cliff peaks
-        } else if (y > 7 && Math.abs(localX) % 3 < 0.5) {
-            color.setHex(0x78909c); // Rocky stone slopes
-        } else {
-            color.setHex(0x4caf50); // Lush valley plains
+        // Structure: Overhanging Cliffs versus deep hollowed tunnels
+        const surfaceY = Math.floor(CONFIG.WORLD.CHUNK_HEIGHT * 0.3 + NoiseEngine.getLayeredNoise(x, z));
+        
+        // Cave systems slicing logic
+        if (y < surfaceY - 4) {
+            const caveDensity = NoiseEngine.get3DNoiseDensity(x, y, z);
+            if (caveDensity < CONFIG.WORLD.CAVE_THRESHOLD) {
+                return null; // Empty space cave interior pocket
+            }
         }
-        colors.push(color.r, color.g, color.b);
 
-        // Procedural Asset Spawning Loop based on noise checks
-        if (i % 23 === 0 && y > -2 && y < 10) {
-            const spawnChance = noise2D(worldX, worldZ);
-            if (spawnChance > 0.82) {
-                createTree(localX, y, localZ, chunkGroup);
-            } else if (spawnChance < 0.015 && y > 2) {
-                createAncientTemple(localX, y, localZ, chunkGroup);
+        if (y <= surfaceY) {
+            if (y === surfaceY && y > CONFIG.WORLD.WATER_LEVEL + 2) return 'GRASS';
+            if (y < CONFIG.WORLD.WATER_LEVEL + 3 && y >= surfaceY - 2) return 'SAND';
+            return 'ROCK';
+        }
+        
+        return null;
+    },
+
+    spawnAncientStructure(cx, cy, cz, chunkGroup) {
+        // Coded multi-tier temples with accurate physical block arrays
+        for (let h = 0; h < 5; h++) {
+            const size = 6 - h;
+            for (let x = -size; x <= size; x++) {
+                for (let z = -size; z <= size; z++) {
+                    const block = new THREE.Mesh(this.blockGeometry, MATERIALS.STONE_BRICK);
+                    block.position.set(cx + x, cy + h, cz + z);
+                    block.castShadow = true;
+                    block.receiveShadow = true;
+                    chunkGroup.add(block);
+                }
+            }
+        }
+    },
+
+    generateChunk(cx, cz) {
+        const key = `${cx},${cz}`;
+        if (this.chunks.has(key)) return;
+
+        const chunkGroup = new THREE.Group();
+        const startX = cx * CONFIG.WORLD.CHUNK_SIZE;
+        const startZ = cz * CONFIG.WORLD.CHUNK_SIZE;
+
+        // Group optimization mappings
+        const instancedData = { GRASS: [], ROCK: [], SAND: [] };
+
+        for (let x = 0; x < CONFIG.WORLD.CHUNK_SIZE; x++) {
+            for (let z = 0; z < CONFIG.WORLD.CHUNK_SIZE; z++) {
+                const worldX = startX + x;
+                const worldZ = startZ + z;
+
+                for (let y = 0; y < CONFIG.WORLD.CHUNK_HEIGHT; y++) {
+                    const blockType = this.getBlockGlobal(worldX, y, null, worldZ);
+                    if (blockType && instancedData[blockType]) {
+                        instancedData[blockType].push(new THREE.Vector3(worldX, y, worldZ));
+                    }
+                }
+            }
+        }
+
+        // Render solid geometry buffers
+        for (const [type, blockPositions] of Object.entries(instancedData)) {
+            if (blockPositions.length === 0) continue;
+            const meshInst = new THREE.InstancedMesh(this.blockGeometry, MATERIALS[type], blockPositions.length);
+            meshInst.castShadow = true;
+            meshInst.receiveShadow = true;
+
+            const dummy = new THREE.Object3D();
+            for (let i = 0; i < blockPositions.length; i++) {
+                dummy.position.copy(blockPositions[i]);
+                dummy.updateMatrix();
+                meshInst.setMatrixAt(i, dummy.matrix);
+            }
+            chunkGroup.add(meshInst);
+        }
+
+        // Ocean plane layer inside chunk boundaries
+        const waterGeo = new THREE.PlaneGeometry(CONFIG.WORLD.CHUNK_SIZE, CONFIG.WORLD.CHUNK_SIZE);
+        const water = new THREE.Mesh(waterGeo, MATERIALS.WATER);
+        water.rotateX(-Math.PI / 2);
+        water.position.set(startX + CONFIG.WORLD.CHUNK_SIZE / 2, CONFIG.WORLD.WATER_LEVEL + 0.5, startZ + CONFIG.WORLD.CHUNK_SIZE / 2);
+        chunkGroup.add(water);
+
+        // Rare random structure/temple placement
+        if (NoiseEngine.hash2D(startX, startZ) > 0.94) {
+            const surfaceSample = Math.floor(CONFIG.WORLD.CHUNK_HEIGHT * 0.3 + NoiseEngine.getLayeredNoise(startX, startZ));
+            if (surfaceSample > CONFIG.WORLD.WATER_LEVEL + 4) {
+                this.spawnAncientStructure(startX + 16, surfaceSample + 1, startZ + 16, chunkGroup);
+            }
+        }
+
+        scene.add(chunkGroup);
+        this.chunks.set(key, chunkGroup);
+    },
+
+    update(px, pz) {
+        const currentCX = Math.floor(px / CONFIG.WORLD.CHUNK_SIZE);
+        const currentCZ = Math.floor(pz / CONFIG.WORLD.CHUNK_SIZE);
+        const activeKeys = new Set();
+
+        for (let x = -CONFIG.WORLD.RENDER_DISTANCE; x <= CONFIG.WORLD.RENDER_DISTANCE; x++) {
+            for (let z = -CONFIG.WORLD.RENDER_DISTANCE; z <= CONFIG.WORLD.RENDER_DISTANCE; z++) {
+                const targetCX = currentCX + x;
+                const targetCZ = currentCZ + z;
+                this.generateChunk(targetCX, targetCZ);
+                activeKeys.add(`${targetCX},${targetCZ}`);
+            }
+        }
+
+        // Clean out memory frames
+        for (const [key, group] of this.chunks.entries()) {
+            if (!activeKeys.has(key)) {
+                scene.remove(group);
+                group.traverse(c => { if (c.geometry) c.geometry.dispose(); });
+                this.chunks.delete(key);
             }
         }
     }
+};
 
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    geo.computeVertexNormals();
+// ============================================================================
+// 7. PHYSICS COLLISION SYSTEM (VOXEL OBJECT INTERSECTION & AXIAL SOLVER)
+// ============================================================================
+const PhysicsEngine = {
+    getSurroundingBlocks(pos) {
+        // Scans the immediate 3D block neighborhood around the target entity vector
+        const blocks = [];
+        const minX = Math.floor(pos.x - CONFIG.PLAYER.RADIUS);
+        const maxX = Math.floor(pos.x + CONFIG.PLAYER.RADIUS);
+        const minY = Math.floor(pos.y - CONFIG.PLAYER.HEIGHT - 0.5);
+        const maxY = Math.floor(pos.y + 0.5);
+        const minZ = Math.floor(pos.z - CONFIG.PLAYER.RADIUS);
+        const maxZ = Math.floor(pos.z + CONFIG.PLAYER.RADIUS);
 
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
-    const terrainMesh = new THREE.Mesh(geo, mat);
-    terrainMesh.receiveShadow = true;
-    terrainMesh.castShadow = true;
-    chunkGroup.add(terrainMesh);
+        for (let x = minX; x <= maxX; x++) {
+            for (let y = minY; y <= maxY; y++) {
+                for (let z = minZ; z <= maxZ; z++) {
+                    if (WorldManager.getBlockGlobal(x, y, null, z) !== null) {
+                        blocks.push(new THREE.Box3(
+                            new THREE.Vector3(x - 0.5, y - 0.5, z - 0.5),
+                            new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5)
+                        ));
+                    }
+                }
+            }
+        }
+        return blocks;
+    },
 
-    // Dynamic water plane inside river basins
-    const waterGeo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE);
-    const waterMat = new THREE.MeshStandardMaterial({ color: 0x00a8cc, transparent: true, opacity: 0.6, roughness: 0.2 });
-    const waterMesh = new THREE.Mesh(waterGeo, waterMat);
-    waterMesh.rotateX(-Math.PI / 2);
-    waterMesh.position.y = -4.5; 
-    chunkGroup.add(waterMesh);
+    checkEntityCollision(pos, velocity, state) {
+        // Step 1: Apply vertical movement tracking separately (Y axis axis alignment)
+        pos.y += velocity.y;
+        let entityBox = new THREE.Box3(
+            new THREE.Vector3(pos.x - CONFIG.PLAYER.RADIUS, pos.y - CONFIG.PLAYER.HEIGHT, pos.z - CONFIG.PLAYER.RADIUS),
+            new THREE.Vector3(pos.x + CONFIG.PLAYER.RADIUS, pos.y, pos.z + CONFIG.PLAYER.RADIUS)
+        );
 
-    chunkGroup.position.set(startX, 0, startZ);
-    scene.add(chunkGroup);
-    loadedChunks.set(key, chunkGroup);
-}
+        let blocks = this.getSurroundingBlocks(pos);
+        state.isGrounded = false;
 
-// Update what chunks are loaded around Dennis's world position tracker
-function updateChunks(playerX, playerZ) {
-    const currentChunkX = Math.floor((playerX + CHUNK_SIZE / 2) / CHUNK_SIZE);
-    const currentChunkZ = Math.floor((playerZ + CHUNK_SIZE / 2) / CHUNK_SIZE);
+        for (const block of blocks) {
+            if (entityBox.intersectsBox(block)) {
+                if (velocity.y > 0) { // Hit ceiling
+                    pos.y = block.min.y - 0.01;
+                    velocity.y = 0;
+                } else if (velocity.y < 0) { // Landed on floor block
+                    pos.y = block.max.y + CONFIG.PLAYER.HEIGHT + 0.01;
+                    velocity.y = 0;
+                    state.isGrounded = true;
+                }
+            }
+        }
 
-    const activeKeys = new Set();
+        // Step 2: Resolve horizontal positioning collisions (X and Z axis tracking splits)
+        pos.x += velocity.x;
+        entityBox.set(
+            new THREE.Vector3(pos.x - CONFIG.PLAYER.RADIUS, pos.y - CONFIG.PLAYER.HEIGHT, pos.z - CONFIG.PLAYER.RADIUS),
+            new THREE.Vector3(pos.x + CONFIG.PLAYER.RADIUS, pos.y, pos.z + CONFIG.PLAYER.RADIUS)
+        );
+        blocks = this.getSurroundingBlocks(pos);
+        for (const block of blocks) {
+            if (entityBox.intersectsBox(block)) {
+                if (velocity.x > 0) pos.x = block.min.x - CONFIG.PLAYER.RADIUS - 0.01;
+                if (velocity.x < 0) pos.x = block.max.x + CONFIG.PLAYER.RADIUS + 0.01;
+            }
+        }
 
-    // Load new chunks in visual radius
-    for (let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
-        for (let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
-            const targetX = currentChunkX + x;
-            const targetZ = currentChunkZ + z;
-            generateChunk(targetX, targetZ);
-            activeKeys.add(`${targetX},${targetZ}`);
+        pos.z += velocity.z;
+        entityBox.set(
+            new THREE.Vector3(pos.x - CONFIG.PLAYER.RADIUS, pos.y - CONFIG.PLAYER.HEIGHT, pos.z - CONFIG.PLAYER.RADIUS),
+            new THREE.Vector3(pos.x + CONFIG.PLAYER.RADIUS, pos.y, pos.z + CONFIG.PLAYER.RADIUS)
+        );
+        blocks = this.getSurroundingBlocks(pos);
+        for (const block of blocks) {
+            if (entityBox.intersectsBox(block)) {
+                if (velocity.z > 0) pos.z = block.min.z - CONFIG.PLAYER.RADIUS - 0.01;
+                if (velocity.z < 0) pos.z = block.max.z + CONFIG.PLAYER.RADIUS + 0.01;
+            }
         }
     }
+};
 
-    // Garbage collector deletes distant chunks to optimize memory completely
-    for (let [key, group] of loadedChunks.entries()) {
-        if (!activeKeys.has(key)) {
-            scene.remove(group);
-            group.traverse(child => { if (child.geometry) child.geometry.dispose(); });
-            loadedChunks.delete(key);
-        }
-    }
-}
+// ============================================================================
+// 8. CONTROLS, IN-GAME INPUT, POVS LOGISTICS
+// ============================================================================
+const input = { w: false, a: false, s: false, d: false, Shift: false, ' ': false };
+const povs = { FIRST_PERSON: 0, THIRD_PERSON_REAR: 1, THIRD_PERSON_FRONT: 2 };
+let currentPOV = povs.THIRD_PERSON_REAR;
 
-// 3. Loading Dennis (The Hero Object Wrapper)
+window.addEventListener('keydown', (e) => {
+    if (e.key in input) input[e.key] = true;
+    if (e.key === ' ') input[' '] = true;
+    if (e.key === 'F5') currentPOV = (currentPOV + 1) % 3;
+});
+window.addEventListener('keyup', (e) => {
+    if (e.key in input) input[e.key] = false;
+    if (e.key === ' ') input[' '] = false;
+});
+
+// ============================================================================
+// 9. ENTITY LOADER & COMPILATION CREATION
+// ============================================================================
 let dennis;
+const playerState = {
+    position: new THREE.Vector3(0, 35, 0), // Default safe starting air drop coordinate
+    velocity: new THREE.Vector3(0, 0, 0),
+    isGrounded: false
+};
+
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 const loader = new GLTFLoader();
@@ -228,98 +434,113 @@ loader.setDRACOLoader(dracoLoader);
 
 loader.load('dennis.glb', (gltf) => {
     dennis = gltf.scene;
-    const dennisWrapper = new THREE.Group();
-    dennisWrapper.position.set(0, 5, 0); 
-    dennisWrapper.scale.set(0.7, 0.7, 0.7);
-    dennisWrapper.name = "dennisRoot";
-    scene.add(dennisWrapper);
-    dennisWrapper.add(dennis); 
+    const wrapper = new THREE.Group();
+    wrapper.name = "playerGroup";
+    wrapper.position.copy(playerState.position);
+    wrapper.scale.set(0.65, 0.65, 0.65);
+    wrapper.add(dennis);
+    scene.add(wrapper);
 
-    dennis.traverse((child) => {
-        if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
-    });
-});
+    dennis.traverse(child => { if (child.isMesh) child.castShadow = true; child.receiveShadow = true; });
+}, undefined, err => console.error(err));
 
-// 4. Input & POV System Configuration
-const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
-const povs = { FIRST_PERSON: 0, THIRD_PERSON_REAR: 1, THIRD_PERSON_FRONT: 2 };
-let currentPOV = povs.THIRD_PERSON_REAR; 
-
-window.addEventListener('keydown', (e) => { 
-    if (e.key in keys) keys[e.key] = true; 
-    if (e.key === 'F5') currentPOV = (currentPOV + 1) % 3;
-});
-window.addEventListener('keyup', (e) => { if (e.key in keys) keys[e.key] = false; });
-
-// 5. Game Loop Controls
-const moveSpeed = 0.22; // Speed bumped up for exploring big endless worlds
-const rotationSpeed = 0.045;
-
+// ============================================================================
+// 10. RUNNING CORE GAME REALTIME RECURSIVE ENGINE LOOP
+// ============================================================================
 function animate() {
     requestAnimationFrame(animate);
     const time = performance.now() * 0.005;
-    const dennisRoot = scene.getObjectByName("dennisRoot");
 
-    if (dennisRoot) {
-        let isMoving = false;
+    // Slowly move skybox clouds across landscape horizons
+    cloudGroup.children.forEach(c => {
+        c.position.x += 0.04;
+        if (c.position.x > 200) c.position.x = -200;
+    });
 
-        if (keys.w || keys.ArrowUp) { dennisRoot.translateZ(moveSpeed); isMoving = true; }
-        if (keys.s || keys.ArrowDown) { dennisRoot.translateZ(-moveSpeed); isMoving = true; }
-        if (keys.a || keys.ArrowLeft) dennisRoot.rotation.y += rotationSpeed;
-        if (keys.d || keys.ArrowRight) dennisRoot.rotation.y -= rotationSpeed;
+    const playerGroup = scene.getObjectByName("playerGroup");
 
-        // Dynamic Height Snapping to Endless Terrain Data
-        const currentGround = getAbsoluteHeight(dennisRoot.position.x, dennisRoot.position.z);
-        dennisRoot.position.y = currentGround + 0.35;
+    if (playerGroup) {
+        // Process vector movement directions based on key flags
+        let speed = CONFIG.PLAYER.SPEED;
+        if (input.Shift) speed *= CONFIG.PLAYER.RUN_MULTIPLIER;
 
-        // Trigger Chunk Loading calculations centered on player positions
-        updateChunks(dennisRoot.position.x, dennisRoot.position.z);
+        const forwardVel = (input.w ? 1 : 0) - (input.s ? 1 : 0);
+        const sideVel = (input.a ? 1 : 0) - (input.d ? 1 : 0);
 
-        // Animate visual bobs
-        const dennisMesh = dennisRoot.children[0];
-        if (isMoving) {
-            const hopHeight = Math.abs(Math.sin(time * 4)) * 0.4;
-            dennisMesh.position.y = hopHeight;
-            dennisMesh.rotation.x = Math.sin(time * 4) * 0.15;
-        } else {
-            dennisMesh.position.y = Math.sin(time * 0.6) * 0.03;
-            dennisMesh.rotation.x = 0;
+        if (sideVel !== 0) playerGroup.rotation.y += sideVel * CONFIG.PLAYER.ROTATION_SPEED;
+
+        // Apply forward/back step changes along local space vectors
+        const direction = new THREE.Vector3(0, 0, forwardVel).applyQuaternion(playerGroup.quaternion);
+        playerState.velocity.x = direction.x * speed;
+        playerState.velocity.z = direction.z * speed;
+
+        // Force gravity constants down every engine frame update step
+        playerState.velocity.y += CONFIG.PLAYER.GRAVITY;
+
+        // Jump Execution Check
+        if (input[' '] && playerState.isGrounded) {
+            playerState.velocity.y = CONFIG.PLAYER.JUMP_FORCE;
+            playerState.isGrounded = false;
         }
 
-        // Sun light keeps traveling above Dennis so shadows never run out
-        sunLight.position.set(dennisRoot.position.x + 30, 120, dennisRoot.position.z + 30);
-        sunLight.target = dennisRoot;
+        // Run full collision evaluation pipelines
+        PhysicsEngine.checkEntityCollision(playerState.position, playerState.velocity, playerState);
 
-        // Multi-POV View Setup Tracker
+        // Lock actual graphic object frame vectors to physics trackers
+        playerGroup.position.copy(playerState.position);
+
+        // Handle inner limb mesh hopping animations smoothly
+        const innerMesh = playerGroup.children[0];
+        const moving = forwardVel !== 0;
+
+        if (moving) {
+            const cycleSpeed = input.Shift ? 5.5 : 4.0;
+            innerMesh.position.y = Math.abs(Math.sin(time * cycleSpeed)) * 0.4;
+            innerMesh.rotation.x = Math.sin(time * cycleSpeed) * 0.14;
+        } else {
+            innerMesh.position.y = Math.sin(time * 0.5) * 0.03;
+            innerMesh.rotation.x = 0;
+        }
+
+        // Re-calculate visible chunks around newly adjusted coordinates
+        WorldManager.update(playerState.position.x, playerState.position.z);
+
+        // Reposition sun matrices right above player to maximize shadow stability coverage maps
+        sunLight.position.set(playerState.position.x + 40, 150, playerState.position.z + 30);
+        sunLight.target = playerGroup;
+
+        // POV Cam Calculations
         let relativeCameraOffset;
         let lookAtTarget;
 
         switch (currentPOV) {
             case povs.FIRST_PERSON:
-                relativeCameraOffset = new THREE.Vector3(0, 1.1, 0); 
-                camera.position.copy(relativeCameraOffset.applyMatrix4(dennisRoot.matrixWorld));
-                lookAtTarget = dennisRoot.localToWorld(new THREE.Vector3(0, 1.1, 1));
+                relativeCameraOffset = new THREE.Vector3(0, 1.2, 0.2);
+                camera.position.copy(relativeCameraOffset.applyMatrix4(playerGroup.matrixWorld));
+                lookAtTarget = playerGroup.localToWorld(new THREE.Vector3(0, 1.2, 2));
                 camera.lookAt(lookAtTarget);
-                dennisRoot.visible = false;
+                playerGroup.visible = false;
                 break;
+                
             case povs.THIRD_PERSON_REAR:
                 relativeCameraOffset = new THREE.Vector3(0, 3.2, -6.5);
-                camera.position.copy(relativeCameraOffset.applyMatrix4(dennisRoot.matrixWorld));
-                lookAtTarget = dennisRoot.localToWorld(new THREE.Vector3(0, 0.8, 0));
+                camera.position.copy(relativeCameraOffset.applyMatrix4(playerGroup.matrixWorld));
+                lookAtTarget = playerGroup.localToWorld(new THREE.Vector3(0, 0.6, 0));
                 camera.lookAt(lookAtTarget);
-                dennisRoot.visible = true;
+                playerGroup.visible = true;
                 break;
+
             case povs.THIRD_PERSON_FRONT:
-                relativeCameraOffset = new THREE.Vector3(0, 3.2, 8.5);
-                camera.position.copy(relativeCameraOffset.applyMatrix4(dennisRoot.matrixWorld));
-                lookAtTarget = dennisRoot.localToWorld(new THREE.Vector3(0, 0.8, 0));
+                relativeCameraOffset = new THREE.Vector3(0, 3.2, 7.5);
+                camera.position.copy(relativeCameraOffset.applyMatrix4(playerGroup.matrixWorld));
+                lookAtTarget = playerGroup.localToWorld(new THREE.Vector3(0, 0.6, 0));
                 camera.lookAt(lookAtTarget);
-                dennisRoot.visible = true;
+                playerGroup.visible = true;
                 break;
         }
     } else {
-        // Initial fallback chunk load before Dennis spawns in
-        updateChunks(0, 0);
+        // Initial fallback chunk initialization
+        WorldManager.update(0, 0);
     }
 
     renderer.render(scene, camera);
