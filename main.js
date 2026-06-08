@@ -30,9 +30,6 @@ scene.add(ambientLight);
 const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
 sunLight.position.set(5, 8, 5);
 sunLight.castShadow = true;
-sunLight.shadow.mapSize.width = 1024;
-sunLight.shadow.mapSize.height = 1024;
-sunLight.shadow.bias = -0.0005; 
 scene.add(sunLight);
 
 // 4. Ground Floor Setup
@@ -44,16 +41,7 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true; 
 scene.add(floor);
 
-// 5. Setup Loading Manager to Bypass Cache Cleanly
-const loadingManager = new THREE.LoadingManager();
-loadingManager.setURLModifier((url) => {
-    if (url.includes('dennis_split.glb')) {
-        return url + '?cachebreak=' + Date.now();
-    }
-    return url;
-});
-
-// 6. Loading Dennis & Gathering Parts
+// 5. Loading Dennis & Gathering Parts
 let dennis;
 let bodyParts = [];
 const ELEVATION_OFFSET = 0.6; 
@@ -61,10 +49,10 @@ const ELEVATION_OFFSET = 0.6;
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
-// FIX: Pass the manager directly into the GLTFLoader constructor
-const loader = new GLTFLoader(loadingManager);
+const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
+// Standard load path with absolutely zero URL modifications
 loader.load('dennis_split.glb', (gltf) => {
     dennis = gltf.scene;
     dennis.position.set(0, ELEVATION_OFFSET, 0);
@@ -73,8 +61,6 @@ loader.load('dennis_split.glb', (gltf) => {
         if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
-            
-            // Gather individual sub-meshes
             bodyParts.push(child);
         }
     });
@@ -84,7 +70,7 @@ loader.load('dennis_split.glb', (gltf) => {
     console.error("Error loading model:", error);
 });
 
-// 7. Animation Loop
+// 6. Animation Loop
 function animate() {
     requestAnimationFrame(animate);
     
@@ -93,14 +79,14 @@ function animate() {
 
     if (bodyParts.length > 0) {
         bodyParts.forEach((part) => {
-            // 1. Identify and skip core torso mesh
+            // Identify and skip core torso mesh
             if (part.geometry && part.geometry.attributes.position.count > 2000) {
                 return; 
             }
 
-            // 2. Scan positions relative to model group root
-            const isFrontPiece = part.position.z > 0.05;
-            const isBackPiece = part.position.z < -0.05;
+            // Move front pieces versus back pieces based on local center positions
+            const isFrontPiece = part.position.z > 0.01;
+            const isBackPiece = part.position.z < -0.01;
 
             if (isFrontPiece) {
                 part.rotation.x = Math.sin(time) * 0.35;
