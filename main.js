@@ -47,7 +47,7 @@ scene.add(floor);
 // 5. Loading Dennis & Gathering Parts
 let dennis;
 let bodyParts = [];
-const ELEVATION_OFFSET = 0.6; // Holds his feet level right on the grass mesh
+const ELEVATION_OFFSET = 0.6; 
 
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
@@ -55,8 +55,23 @@ dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5
 const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
-// Using cache-busting to guarantee Cloudflare downloads the correct version
-loader.load('dennis_split.glb?v=1', (gltf) => {
+// FORCE LOADING ENGINE TO BYPASS CACHE CLEANLY WITHOUT CHANGING FILE NAME
+loader.setManager(new THREE.LoadingManager(
+    () => {}, 
+    () => {}, 
+    () => {}, 
+    THREE.DefaultLoadingManager.onError
+));
+// Custom request modifier forces network layer to load a fresh copy
+loader.manager.setURLModifier((url) => {
+    if (url.includes('dennis_split.glb')) {
+        return url + '?cachebreak=' + Date.now();
+    }
+    return url;
+});
+
+// Clean filename string so Cloudflare path matching doesn't break
+loader.load('dennis_split.glb', (gltf) => {
     dennis = gltf.scene;
     dennis.position.set(0, ELEVATION_OFFSET, 0);
 
@@ -65,7 +80,7 @@ loader.load('dennis_split.glb?v=1', (gltf) => {
             child.castShadow = true;
             child.receiveShadow = true;
             
-            // Collect every individual separated sub-mesh
+            // Gather individual sub-meshes
             bodyParts.push(child);
         }
     });
@@ -84,20 +99,18 @@ function animate() {
 
     if (bodyParts.length > 0) {
         bodyParts.forEach((part) => {
-            // 1. Identify the main core torso mesh by its vertex count and skip it
+            // 1. Identify and skip core torso mesh
             if (part.geometry && part.geometry.attributes.position.count > 2000) {
                 return; 
             }
 
-            // 2. Scan positions relative to the model root origin to isolate front/back limbs
+            // 2. Scan positions relative to model group root
             const isFrontPiece = part.position.z > 0.05;
             const isBackPiece = part.position.z < -0.05;
 
             if (isFrontPiece) {
-                // Swing front parts using a natural sin wave
                 part.rotation.x = Math.sin(time) * 0.35;
             } else if (isBackPiece) {
-                // Swing back parts in perfect opposite phase
                 part.rotation.x = -Math.sin(time) * 0.35;
             }
         });
@@ -108,7 +121,6 @@ function animate() {
 
 animate();
 
-// Window Resize Handling
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
