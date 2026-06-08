@@ -3,9 +3,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// Scene & Renderer Setup
+// 1. Scene & Renderer Setup
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xa5d6a7); 
+scene.background = new THREE.Color(0xa5d6a7); // Nice green background
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 camera.position.set(0, 3, 5); 
@@ -17,12 +17,13 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 document.body.appendChild(renderer.domElement);
 
+// 2. Spectator Controls
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.target.set(0, 0.5, 0);
 
-// Lighting
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); 
+// 3. Lighting
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.7); 
 scene.add(ambientLight);
 
 const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -30,7 +31,7 @@ sunLight.position.set(5, 8, 5);
 sunLight.castShadow = true;
 scene.add(sunLight);
 
-// Floor
+// 4. Floor
 const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(20, 20),
     new THREE.MeshStandardMaterial({ color: 0x81c784, roughness: 0.8 })
@@ -39,13 +40,10 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true; 
 scene.add(floor);
 
-// 1. Custom Material Configuration (The Secret Sauce)
-let customUniforms = {
-    uTime: { value: 0 }
-};
-
+// 5. Variables for Dennis and Split Parts
 let dennis;
-const ELEVATION_OFFSET = 0.5; // Change this value to raise or lower him on the grass!
+let bodyParts = [];
+const ELEVATION_OFFSET = 0.6; // Ground height benchmark
 
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
@@ -53,7 +51,8 @@ dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5
 const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
-loader.load('dennis.glb', (gltf) => {
+// Load your freshly partitioned file
+loader.load('dennis_split.glb', (gltf) => {
     dennis = gltf.scene;
     dennis.position.set(0, ELEVATION_OFFSET, 0);
 
@@ -61,60 +60,46 @@ loader.load('dennis.glb', (gltf) => {
         if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
-
-            // Intercept his material and inject a custom shader modifier
-            child.material.onBeforeCompile = (shader) => {
-                shader.uniforms.uTime = customUniforms.uTime;
-
-                // Inject math code directly into the GPU pipeline to bend his body smoothly
-                shader.vertexShader = `
-                    uniform float uTime;
-                ` + shader.vertexShader;
-
-                shader.vertexShader = shader.vertexShader.replace(
-                    '#include <begin_vertex>',
-                    `
-                    #include <begin_vertex>
-                    
-                    // Wave calculation based on how far forward or back the vertex is (position.z)
-                    float wave = sin(uTime * 8.0 + transformed.z * 5.0) * 0.12;
-                    
-                    // Smoothly apply the lateral bend to the x-coordinates of his mesh
-                    transformed.x += wave * smoothstep(0.0, 0.5, abs(transformed.z));
-                    `
-                );
-            };
+            
+            // Gather the isolated child meshes into our array
+            bodyParts.push(child);
         }
     });
 
     scene.add(dennis);
 }, undefined, (error) => {
-    console.error(error);
+    console.error("Error loading model:", error);
 });
 
-// Animation Loop
+// 6. Animation Loop
 function animate() {
     requestAnimationFrame(animate);
     
-    const time = performance.now() * 0.001;
+    const time = performance.now() * 0.005;
     controls.update();
 
-    // Update the shader time uniform to drive the running fluid motion
-    customUniforms.uTime.value = time;
-
-    if (dennis) {
-        // Subtle overall body bobbing to accent the runtime stride
-        dennis.position.y = ELEVATION_OFFSET + Math.abs(sin(time * 8.0)) * 0.04;
+    // Ensure we actually have parts split up to manipulate
+    if (bodyParts.length >= 2) {
+        bodyParts.forEach((part, index) => {
+            // Index 0 is typically the main base/torso mesh. 
+            // We leave that unrotated so his body stays perfectly straight!
+            if (index > 0) {
+                // Alternating meshes swing in opposite directions to simulate limbs moving past each other
+                if (index % 2 === 0) {
+                    part.rotation.x = Math.sin(time) * 0.35;
+                } else {
+                    part.rotation.x = -Math.sin(time) * 0.35;
+                }
+            }
+        });
     }
 
     renderer.render(scene, camera);
 }
 
-// Global math helper function missing in vanilla JS loop scope
-function sin(x) { return Math.sin(x); }
-
 animate();
 
+// Handle Resize
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
