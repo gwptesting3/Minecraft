@@ -53,7 +53,7 @@ const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
 // Standard load path with absolutely zero URL modifications
-loader.load('dennis_split.glb', (gltf) => {
+loader.load('dennis_walk.glb', (gltf) => {
     dennis = gltf.scene;
     dennis.position.set(0, ELEVATION_OFFSET, 0);
 
