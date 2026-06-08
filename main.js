@@ -44,7 +44,16 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true; 
 scene.add(floor);
 
-// 5. Loading Dennis & Gathering Parts
+// 5. Setup Loading Manager to Bypass Cache Cleanly
+const loadingManager = new THREE.LoadingManager();
+loadingManager.setURLModifier((url) => {
+    if (url.includes('dennis_split.glb')) {
+        return url + '?cachebreak=' + Date.now();
+    }
+    return url;
+});
+
+// 6. Loading Dennis & Gathering Parts
 let dennis;
 let bodyParts = [];
 const ELEVATION_OFFSET = 0.6; 
@@ -52,25 +61,10 @@ const ELEVATION_OFFSET = 0.6;
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
-const loader = new GLTFLoader();
+// FIX: Pass the manager directly into the GLTFLoader constructor
+const loader = new GLTFLoader(loadingManager);
 loader.setDRACOLoader(dracoLoader);
 
-// FORCE LOADING ENGINE TO BYPASS CACHE CLEANLY WITHOUT CHANGING FILE NAME
-loader.setManager(new THREE.LoadingManager(
-    () => {}, 
-    () => {}, 
-    () => {}, 
-    THREE.DefaultLoadingManager.onError
-));
-// Custom request modifier forces network layer to load a fresh copy
-loader.manager.setURLModifier((url) => {
-    if (url.includes('dennis_split.glb')) {
-        return url + '?cachebreak=' + Date.now();
-    }
-    return url;
-});
-
-// Clean filename string so Cloudflare path matching doesn't break
 loader.load('dennis_split.glb', (gltf) => {
     dennis = gltf.scene;
     dennis.position.set(0, ELEVATION_OFFSET, 0);
@@ -90,7 +84,7 @@ loader.load('dennis_split.glb', (gltf) => {
     console.error("Error loading model:", error);
 });
 
-// 6. Animation Loop
+// 7. Animation Loop
 function animate() {
     requestAnimationFrame(animate);
     
