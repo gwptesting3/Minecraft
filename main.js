@@ -4,10 +4,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 // 1. Scene & Renderer Setup
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x81d4fa); // Beautiful adventure sky blue
-scene.fog = new THREE.FogExp2(0x81d4fa, 0.05); // Atmospheric fog for realism
+scene.background = new THREE.Color(0x81d4fa); // Sunny Zelda sky
+scene.fog = new THREE.FogExp2(0x81d4fa, 0.015); // Fog for realistic distance scale
 
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -16,144 +16,203 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 document.body.appendChild(renderer.domElement);
 
-// 2. Realistic Environmental Lighting
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); 
+// 2. Realistic Lighting
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); 
 scene.add(ambientLight);
 
-const sunLight = new THREE.DirectionalLight(0xfffde7, 1.4); // Warm sunlight
-sunLight.position.set(20, 40, 20);
+const sunLight = new THREE.DirectionalLight(0xfffde7, 1.4); 
+sunLight.position.set(40, 80, 40);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.width = 2048;
 sunLight.shadow.mapSize.height = 2048;
-sunLight.shadow.camera.near = 0.5;
-sunLight.shadow.camera.far = 150;
-const d = 40;
+const d = 150;
 sunLight.shadow.camera.left = -d;
 sunLight.shadow.camera.right = d;
 sunLight.shadow.camera.top = d;
 sunLight.shadow.camera.bottom = -d;
 scene.add(sunLight);
 
-// 3. Blocky Minecraft-Style Procedural Terrain
-const blockSize = 1;
-const worldSize = 30; // Grid size of our starter map
+// 3. Procedural Coded Zelda Terrain (Realistic & Continuous)
+const terrainSize = 300; 
+const segments = 120; 
 
-// Create a realistic blocky material
-const blockGeometry = new THREE.BoxGeometry(blockSize, blockSize, blockSize);
-const blockMaterial = new THREE.MeshStandardMaterial({ 
-    color: 0x558b2f, // Deep rich Minecraft grass green
-    roughness: 0.9,
-    metalness: 0.1
-});
+// A massive detailed mesh plane
+const terrainGeo = new THREE.PlaneGeometry(terrainSize, terrainSize, segments, segments);
+terrainGeo.rotateX(-Math.PI / 2); // Flip flat on the floor
 
-// Build a grid of individual 3D voxel blocks
-for (let x = -worldSize/2; x < worldSize/2; x++) {
-    for (let z = -worldSize/2; z < worldSize/2; z++) {
-        // Generate varied heights using mathematical waves to create Zelda-like rolling hills
-        const height = Math.round((Math.sin(x * 0.2) + Math.cos(z * 0.2)) * 1);
-        
-        for (let y = -3; y <= height; y++) {
-            const block = new THREE.Mesh(blockGeometry, blockMaterial);
-            block.position.set(x * blockSize, y * blockSize, z * blockSize);
-            block.matrixAutoUpdate = false; // Optimizes engine performance for block grids
-            block.updateMatrix();
-            
-            if (y === height) {
-                block.castShadow = true;
-                block.receiveShadow = true;
-            } else {
-                // Adjust dirt layers to look darker underneath
-                block.material = new THREE.MeshStandardMaterial({ color: 0x4e342e, roughness: 0.9 });
-            }
-            scene.add(block);
-        }
+const positions = terrainGeo.attributes.position;
+const colors = [];
+
+// Realistic Height Function (Generates hills, valleys, and riverbeds)
+function getHeight(x, z) {
+    // Large structural mountains
+    let y = Math.sin(x * 0.015) * Math.cos(z * 0.015) * 8;
+    // Medium rolling hills
+    y += Math.sin(x * 0.05) * Math.sin(z * 0.05) * 3;
+    // Small micro-detail roughness
+    y += Math.cos(x * 0.2) * Math.sin(z * 0.2) * 0.4;
+    
+    // Create a winding river valley down the center
+    const riverBed = Math.sin(x * 0.02 + z * 0.01) * 10;
+    if (Math.abs(z - riverBed) < 15) {
+        y -= (15 - Math.abs(z - riverBed)) * 0.5; // Carve into the earth
     }
+    return y;
 }
 
-// 4. Loading Dennis as the Playable Hero
+// Reshape the plane and calculate realistic vertex colors based on slopes/height
+for (let i = 0; i < positions.count; i++) {
+    const x = positions.getX(i);
+    const z = positions.getZ(i);
+    const y = getHeight(x, z);
+    positions.setY(i, y);
+
+    // Color logic
+    const color = new THREE.Color();
+    if (y < -2) {
+        // Sandy Riverbeds
+        color.setHex(0xd7ccc8); 
+    } else if (y > 6) {
+        // Rocky mountain peaks
+        color.setHex(0x90a4ae); 
+    } else {
+        // Lush green valleys (slight random variation for realism)
+        const greenTone = 0.4 + Math.random() * 0.15;
+        color.setRGB(greenTone * 0.6, greenTone, greenTone * 0.4);
+    }
+    colors.push(color.r, color.g, color.b);
+}
+
+terrainGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+terrainGeo.computeVertexNormals(); // Recompute lighting data for smooth slopes
+
+const terrainMat = new THREE.MeshStandardMaterial({ 
+    vertexColors: true,
+    roughness: 0.9,
+    metalness: 0.05
+});
+
+const terrain = new THREE.Mesh(terrainGeo, terrainMat);
+terrain.receiveShadow = true;
+scene.add(terrain);
+
+// Add a flat, semi-transparent realistic water plane in the valleys
+const waterGeo = new THREE.PlaneGeometry(terrainSize, terrainSize);
+const waterMat = new THREE.MeshStandardMaterial({
+    color: 0x00bcd4,
+    transparent: true,
+    opacity: 0.6,
+    roughness: 0.2
+});
+const water = new THREE.Mesh(waterGeo, waterMat);
+water.rotation.x = -Math.PI / 2;
+water.position.y = -3.5; // Sits inside the carved riverbeds
+scene.add(water);
+
+// 4. Loading Dennis (The Playable Hero)
 let dennis;
-const BASE_Y = 1.0; // Anchors him perfectly on top of the blocks
 
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
-
 const loader = new GLTFLoader();
 loader.setDRACOLoader(dracoLoader);
 
 loader.load('dennis.glb', (gltf) => {
     dennis = gltf.scene;
-    dennis.position.set(0, BASE_Y, 0);
-    dennis.scale.set(0.8, 0.8, 0.8); // Scale down slightly to fit the block sizes
+    
+    const dennisWrapper = new THREE.Group();
+    dennisWrapper.position.set(0, 0, 0); // Spawns at center
+    dennisWrapper.scale.set(0.8, 0.8, 0.8);
+    dennisWrapper.name = "dennisRoot";
+    scene.add(dennisWrapper);
 
+    dennisWrapper.add(dennis); 
+    
     dennis.traverse((child) => {
         if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
         }
     });
-
-    scene.add(dennis);
 }, undefined, (error) => {
     console.error('Error loading hero Dennis:', error);
 });
 
-// 5. Input System (Tracking Keypresses)
+// 5. Input & Camera POV System
 const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+const povs = { FIRST_PERSON: 0, THIRD_PERSON_REAR: 1, THIRD_PERSON_FRONT: 2 };
+let currentPOV = povs.THIRD_PERSON_REAR; 
 
-window.addEventListener('keydown', (e) => { if (e.key in keys) keys[e.key] = true; });
+window.addEventListener('keydown', (e) => { 
+    if (e.key in keys) keys[e.key] = true; 
+    if (e.key === 'F5') { currentPOV = (currentPOV + 1) % 3; }
+});
 window.addEventListener('keyup', (e) => { if (e.key in keys) keys[e.key] = false; });
 
 // 6. Game Animation & Control Loop
-const moveSpeed = 0.07;
-const rotationSpeed = 0.05;
+const moveSpeed = 0.12;
+const rotationSpeed = 0.04;
 
 function animate() {
     requestAnimationFrame(animate);
 
     const time = performance.now() * 0.005;
+    const dennisRoot = scene.getObjectByName("dennisRoot");
 
-    if (dennis) {
+    if (dennisRoot) {
         let isMoving = false;
 
-        // Forward / Backward movement
-        if (keys.w || keys.ArrowUp) {
-            dennis.translateZ(moveSpeed);
-            isMoving = true;
-        }
-        if (keys.s || keys.ArrowDown) {
-            dennis.translateZ(-moveSpeed);
-            isMoving = true;
-        }
+        // Apply movement/rotation
+        if (keys.w || keys.ArrowUp) { dennisRoot.translateZ(moveSpeed); isMoving = true; }
+        if (keys.s || keys.ArrowDown) { dennisRoot.translateZ(-moveSpeed); isMoving = true; }
+        if (keys.a || keys.ArrowLeft) { dennisRoot.rotation.y += rotationSpeed; }
+        if (keys.d || keys.ArrowRight) { dennisRoot.rotation.y -= rotationSpeed; }
 
-        // Steer Left / Right
-        if (keys.a || keys.ArrowLeft) {
-            dennis.rotation.y += rotationSpeed;
-        }
-        if (keys.d || keys.ArrowRight) {
-            dennis.rotation.y -= rotationSpeed;
-        }
+        // REAL-TIME CLIMBING: Dynamically snap Dennis's height to the hills underneath him
+        const currentTerrainHeight = getHeight(dennisRoot.position.x, dennisRoot.position.z);
+        dennisRoot.position.y = currentTerrainHeight + 0.4; // Adds a small standing offset
 
-        // Minecraft Bouncy Hopping Logic
+        const dennisMesh = dennisRoot.children[0]; 
+
+        // Visual bounce animation setup
         if (isMoving) {
-            // High-intensity jumping animation when running around
-            const hopHeight = Math.abs(Math.sin(time * 3)) * 0.35;
-            dennis.position.y = BASE_Y + hopHeight;
-            dennis.rotation.x = Math.sin(time * 3) * 0.12; // Forward tilt
+            const hopHeight = Math.abs(Math.sin(time * 3.5)) * 0.35;
+            dennisMesh.position.y = hopHeight; 
+            dennisMesh.rotation.x = Math.sin(time * 3.5) * 0.12;
         } else {
-            // Calm, idle breathing bob when standing still
-            dennis.position.y = BASE_Y + Math.sin(time * 0.5) * 0.03;
-            dennis.rotation.x = 0;
+            dennisMesh.position.y = Math.sin(time * 0.5) * 0.03; 
+            dennisMesh.rotation.x = 0;
         }
 
-        // Dynamic RPG Style Camera (Locks behind Dennis's back and follows him smoothly)
-        const relativeCameraOffset = new THREE.Vector3(0, 2.5, -4.5);
-        const cameraOffset = relativeCameraOffset.applyMatrix4(dennis.matrixWorld);
-        
-        camera.position.x += (cameraOffset.x - camera.position.x) * 0.1;
-        camera.position.y += (cameraOffset.y - camera.position.y) * 0.1;
-        camera.position.z += (cameraOffset.z - camera.position.z) * 0.1;
-        
-        camera.lookAt(dennis.position.x, dennis.position.y + 0.5, dennis.position.z);
+        // --- Multi-POV Stabilized Camera Logic ---
+        let relativeCameraOffset;
+        let lookAtTarget;
+
+        switch (currentPOV) {
+            case povs.FIRST_PERSON:
+                relativeCameraOffset = new THREE.Vector3(0, 1.2, 0); 
+                camera.position.copy(relativeCameraOffset.applyMatrix4(dennisRoot.matrixWorld));
+                lookAtTarget = dennisRoot.localToWorld(new THREE.Vector3(0, 1.2, 1));
+                camera.lookAt(lookAtTarget);
+                dennisRoot.visible = false; 
+                break;
+
+            case povs.THIRD_PERSON_REAR:
+                relativeCameraOffset = new THREE.Vector3(0, 2.5, -5.5);
+                camera.position.copy(relativeCameraOffset.applyMatrix4(dennisRoot.matrixWorld));
+                lookAtTarget = dennisRoot.localToWorld(new THREE.Vector3(0, 0.6, 0));
+                camera.lookAt(lookAtTarget);
+                dennisRoot.visible = true; 
+                break;
+
+            case povs.THIRD_PERSON_FRONT:
+                relativeCameraOffset = new THREE.Vector3(0, 2.5, 7.5); 
+                camera.position.copy(relativeCameraOffset.applyMatrix4(dennisRoot.matrixWorld));
+                lookAtTarget = dennisRoot.localToWorld(new THREE.Vector3(0, 0.6, 0));
+                camera.lookAt(lookAtTarget);
+                dennisRoot.visible = true; 
+                break;
+        }
     }
 
     renderer.render(scene, camera);
@@ -161,7 +220,6 @@ function animate() {
 
 animate();
 
-// Resize Window handling
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
